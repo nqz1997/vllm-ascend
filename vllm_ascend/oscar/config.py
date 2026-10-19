@@ -75,6 +75,18 @@ def _from_legacy_env() -> OscarInt2Config:
     # frozen overlay accepts behaves identically on this branch. The
     # dataclass field defaults above are the documented semantic defaults
     # for direct construction, NOT the legacy-env fallbacks.
+    #
+    # LAYERING (runtime-proven, regression/probe_out): the serve entry
+    # (r168_serve_can.py) additionally setdefaults R112_LSE_FAST /
+    # R113_MIDDLE_CPP / R113_QUANT_CPP / R113_QROT_DEDUPE to "1" in MODE=B
+    # BEFORE the engine import -- those keys are NOT in the docker -e
+    # whitelist, so "absent from the whitelist" does not mean "unset". The
+    # frozen chain therefore ran the C++ single-call quantize (launcher-ext
+    # oscar_quant_kv, ATen-only) as its production path. R113_SCATTER_CPP
+    # WAS whitelisted with an EMPTY default, which defeats the setdefault
+    # (present-but-empty) -- paged scatter writes stayed on the Python
+    # path. This shim reads the env exactly as the monolith did; no
+    # behavior change on either side.
     return OscarInt2Config(
         enabled=_flag("OSCAR_INT2_ENABLED") or _flag("R218_INT2_SERVE"),
         prefix_window=int(os.environ.get("R109_TT_PREFIX", "128")),
