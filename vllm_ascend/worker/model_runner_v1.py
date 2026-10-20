@@ -19,8 +19,91 @@
 
 import gc
 import math
+import os
 import sys
 import time
+# R194_CEPROF (DIAGNOSTIC_ONLY/NEVER_PROMOTE/default OFF): cProfile the
+# importing thread (EngineCore main) from import time; a daemon dumps pstats
+# every 30s (EngineCore is SIGKILLed at shutdown -> atexit cannot run).
+try:
+    if os.environ.get("R194_CEPROF", "0") == "1":
+        import cProfile as _cp194m, threading as _th194m
+        _prof194 = _cp194m.Profile()
+        _prof194.enable()
+        _prof194_n = [0]
+        def _r194_dump():
+            while True:
+                time.sleep(30)
+                _prof194_n[0] += 1
+                try:
+                    _prof194.disable()
+                    _prof194.dump_stats("/tmp/r194_ceprof_%d.pstats" % _prof194_n[0])
+                    _prof194.enable()
+                except Exception:
+                    pass
+        _th194m.Thread(target=_r194_dump, daemon=True).start()
+except Exception:
+    pass
+# R195_HPROF (DIAGNOSTIC_ONLY/NEVER_PROMOTE/default OFF): per-step host phase
+# marks to decompose the B32@4K ~218ms decode host gap (433 TPOT = run_model
+# 222.7 + update 2.5 + ~208 OUTSIDE model_runner.execute_model). Wraps
+# NPUModelRunner.execute_model / sample_tokens with wall marks written to
+# /tmp/r195_hprof.jsonl (same EngineCore thread; append-only). Regions:
+#   mrx_in->rm_in = mr input prep; rm wall covers :275 sync + replay enqueue
+#   (R156_HOSTPROF splits sync/enq separately);
+#   mrx_out->st_in = EngineCore glue (batch queue / grammar / executor);
+#   st_in->st_out = sampler + sampled-token D2H wait (autoregressive dep);
+#   st_out->mrx_in(next) = scheduler.update_from_output + IPC + schedule(i+1)
+#   + input build.
+# R195_CPROF_WARM: start a cProfile of the EngineCore thread after N
+# consecutive small-schedule steps (pure decode), profile R195_CPROF_LEN
+# steps, dump /tmp/r195_cprof.pstats, disable. 0 = off.
+try:
+    _R195_HP = os.environ.get("R195_HPROF", "0") == "1"
+    _R195_CPROF_WARM = int(os.environ.get("R195_CPROF_WARM", "0") or 0)
+    _R195_CPROF_LEN = int(os.environ.get("R195_CPROF_LEN", "24") or 24)
+    _R195_ST = {"n": 0, "small": 0, "prof": None, "prof_n": 0, "path": None}
+    def _r195_mark(tag, ntp=0):
+        if not _R195_HP:
+            return
+        try:
+            with open("/tmp/r195_hprof.jsonl", "a") as _f195:
+                _f195.write('{"n": %d, "tag": "%s", "ntp": %d, "t": %.6f}\n'
+                            % (_R195_ST["n"], tag, int(ntp), time.perf_counter()))
+        except Exception:
+            pass
+    def _r195_maybe_cprof(ntp):
+        # decode-gated cProfile: enable after WARM consecutive small steps.
+        # R195_CPROF_BIG=1 inverts the gate: profile BIG prefill-class steps
+        # (ntp>=4096) instead — targets the 2nd-prefill 2.5x slowdown.
+        _big_gate = os.environ.get("R195_CPROF_BIG", "0") == "1"
+        if _R195_CPROF_WARM <= 0 or _R195_ST["prof"] is not None:
+            return
+        if _big_gate:
+            _hit = ntp >= 4096
+        else:
+            _hit = ntp <= 48
+        if _hit:
+            _R195_ST["small"] += 1
+        else:
+            _R195_ST["small"] = 0
+        if (_R195_ST["small"] >= _R195_CPROF_WARM
+                and _R195_ST["prof"] is None and _R195_ST["prof_n"] == 0):
+            import cProfile as _cp195
+            _R195_ST["prof"] = _cp195.Profile()
+            _R195_ST["prof"].enable()
+            _R195_ST["prof_n"] = _R195_ST["n"]
+    def _r195_maybe_cprof_stop():
+        if (_R195_ST["prof"] is not None
+                and _R195_ST["n"] - _R195_ST["prof_n"] >= _R195_CPROF_LEN):
+            try:
+                _R195_ST["prof"].disable()
+                _R195_ST["prof"].dump_stats("/tmp/r195_cprof.pstats")
+            except Exception:
+                pass
+            _R195_ST["prof"] = None
+except Exception:
+    pass
 from collections import defaultdict
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
@@ -247,6 +330,20 @@ class ExecuteModelState(NamedTuple):
     ec_connector_output: "ECConnectorOutput | None"
     cudagraph_stats: CUDAGraphStat | None
     batch_desc: BatchDescriptor
+
+
+def _r167_dbg(tag, **kw):
+    try:
+        import json as _j167d
+        import os as _o167d
+        _n167 = globals().setdefault('_R167_DBG_N', [0])
+        if _n167[0] < 60:
+            _n167[0] += 1
+            with open("/tmp/r167_evdbg.log", "a") as _f167d:
+                _f167d.write(_j167d.dumps({"n": _n167[0], "tag": tag,
+                                            **{k: str(v)[:80] for k, v in kw.items()}}) + "\n")
+    except Exception:
+        pass
 
 
 class NPUModelRunner(GPUModelRunner):
@@ -678,6 +775,56 @@ class NPUModelRunner(GPUModelRunner):
         return self.model
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> Callable | None:
+        # R144 P0.1: stash the EXPLICIT vLLM scheduler lifecycle events for the
+        # attention layer (which only sees InputBatch.req_ids post-update, NOT
+        # the SchedulerOutput). The resolver consumes these instead of inferring
+        # finish from batch absence (forbidden: a request can be temporarily
+        # absent without being finished). finished_req_ids/preempted_req_ids are
+        # sets of req_id strings; scheduled_new_reqs is a list of NewRequestData
+        # (.req_id). Stashed BEFORE super()._update_states mutates InputBatch.
+        self._r144_finished = set(getattr(scheduler_output, "finished_req_ids", set()) or set())
+        self._r144_preempted = set(getattr(scheduler_output, "preempted_req_ids", None) or set())
+        self._r144_new = set(
+            getattr(nr, "req_id", nr) for nr in (getattr(scheduler_output, "scheduled_new_reqs", None) or [])
+        )
+        # R167 FREEFIX: process the lifecycle events HERE, at the runner level.
+        # The slot allocator's release previously ran only inside the attention
+        # layer's bind_slots (eager forwards) — but the step that CARRIES
+        # finished_req_ids is the request's final DECODE step (a graph replay:
+        # the attention layer's Python never runs). By the next eager forward
+        # the scheduler_output no longer lists the finish => the frees were
+        # LOST and capacity exhausted monotonically (probe: cv128 exhausted
+        # mseq=12 at gen 7 with ZERO frees across 6 finished generations).
+        if (os.environ.get("R166_SLOTALGO", "0") == "1"
+                or os.environ.get("R170_ROWSLOT", "0") == "1") and (
+                self._r144_finished or self._r144_preempted):
+            try:
+                from vllm_ascend.attention.attention_v1 import (
+                    AscendAttentionBackendImpl as _A167ff)
+                # R172 FIX: bind_slots sets _r166_alloc/_r164_slotmap on the
+                # INT2 SUBCLASS (type(self) at bind); reading them off the
+                # BASE class returned None -> releases were a silent no-op
+                # (B32 churn exhausted cap with zero frees, rid-122 determin-
+                # istic). Resolve base-then-subclass like the migrator does.
+                _sub167 = getattr(
+                    __import__("vllm_ascend.attention.attention_int2",
+                               fromlist=["AscendINT2AttentionBackendImpl"]),
+                    "AscendINT2AttentionBackendImpl", None)
+                _A167 = (getattr(_A167ff, "_r166_alloc", None)
+                         or (getattr(_sub167, "_r166_alloc", None)
+                             if _sub167 is not None else None))
+                if _A167 is not None:
+                    _gone167 = set(self._r144_finished) | set(self._r144_preempted)
+                    for _r167ff in _gone167:
+                        _A167.release(_r167ff)
+                    _sm167 = (getattr(_A167ff, "_r164_slotmap", None)
+                              or (getattr(_sub167, "_r164_slotmap", None)
+                                  if _sub167 is not None else None))
+                    if _sm167 is not None:
+                        for _r167ff in _gone167:
+                            _sm167.pop(_r167ff, None)
+            except Exception:
+                pass
         # Temporary rewind guard for KV-load-failure recompute.
         # This can be removed after the upstream fix is merged.
         req_data = scheduler_output.scheduled_cached_reqs
@@ -1144,6 +1291,28 @@ class NPUModelRunner(GPUModelRunner):
             self.num_computed_tokens[:num_reqs] + num_scheduled_tokens_gpu
         )
         self.seq_lens[num_reqs:].fill_(0)
+        # R118 runner-side input snap (default OFF; R118_RUNNER_SNAP adds a
+        # per-step device sync via .item() — it can MASK H2D/replay races, so
+        # no-sync control legs must run with it off): per-step content of the
+        # persistent graph-input buffers AFTER the H2D writes and BEFORE the
+        # forward/replay — the runner leg of the first-wrong-tensor ladder.
+        if (os.environ.get("R118_RUNNER_SNAP", "0") == "1"
+                and total_num_scheduled_tokens <= 16):
+            try:
+                import r118_trace as _rt
+                import json as _js, time as _tm
+                _row = {"mode": "runner", "tag": "prep",
+                        "tot": int(total_num_scheduled_tokens),
+                        "ids_cpu0": int(self.input_ids.cpu[0]),
+                        "ids_gpu0": int(self.input_ids.gpu[0].item()),
+                        "pos_gpu0": int(self.positions[0].item()),
+                        "nct_gpu0": int(self.num_computed_tokens[0].item()),
+                        "sl_gpu0": int(self.seq_lens[0].item()),
+                        "t": _tm.time_ns()}
+                with open(_rt.OUT, "a") as _f:
+                    _f.write(_js.dumps(_row) + "\n")
+            except Exception as _e:
+                print(f"[R118-RUNNER-SNAP] {_e}", flush=True)
 
         if should_rebuild_async_inputs:
             req_indices_full = self.pcp_manager.async_rebuild_req_indices_full
@@ -1385,6 +1554,23 @@ class NPUModelRunner(GPUModelRunner):
             total_num_scheduled_tokens,
             cu_num_tokens,
         )
+        # R118 runner-side input snap (default OFF; R118_RUNNER_SNAP gates —
+        # its .item() sync can mask H2D/replay races; see the note above).
+        if (os.environ.get("R118_RUNNER_SNAP", "0") == "1"
+                and total_num_scheduled_tokens <= 16):
+            try:
+                import r118_trace as _rt
+                import json as _js, time as _tm
+                _row = {"mode": "runner", "tag": "prep",
+                        "tot": int(total_num_scheduled_tokens),
+                        "ids_cpu0": int(self.input_ids.cpu[0]),
+                        "ids_gpu0": int(self.input_ids.gpu[0].item()),
+                        "pos0": int(positions_np[0]) if positions_np is not None else -1,
+                        "t": _tm.time_ns()}
+                with open(_rt.OUT, "a") as _f:
+                    _f.write(_js.dumps(_row) + "\n")
+            except Exception as _e:
+                print(f"[R118-RUNNER-SNAP] {_e}", flush=True)
 
     def _preprocess(
         self,
@@ -1918,6 +2104,64 @@ class NPUModelRunner(GPUModelRunner):
                 self._execution_start_time = time.perf_counter()
         if self.execute_model_state is not None:
             raise RuntimeError("State error: sample_tokens() must be called after execute_model() returns None.")
+        # R166_PFSYNC (default OFF, CAUSAL DIAGNOSTIC): a controlled device sync
+        # at the first step AFTER any prefill-containing step. Adjudicates the
+        # freshest-prefill-row race (E33/E34: the request whose prefill is
+        # freshest at its first group replay is the wrong row — if this sync
+        # cures it, the racer is an async write from the prefill step not
+        # visible to the next replay despite current_stream sync).
+        try:
+            import os as _os166p
+            if _os166p.environ.get("R166_PFSYNC", "0") == "1":
+                _pf = getattr(self, "_r166_last_step_prefill", False)
+                _st166 = None
+                for _k in getattr(forward_context, "attn_metadata", {}) or {}:
+                    _st166 = (forward_context.attn_metadata[_k] or None)
+                    break
+                _is_pf = bool(_st166 is not None and str(getattr(
+                    _st166, "attn_state", "")).endswith(("PrefillNoCache", "ChunkedPrefill", "Mixed")))
+                if _pf and not _is_pf:
+                    import torch as _t166p
+                    _t166p.npu.synchronize()
+                self._r166_last_step_prefill = _is_pf
+        except Exception:
+            pass
+        # R169_FLATDUMP (default OFF): prefill-state HOST block-table
+        # timeline (scheduler truth per prefill/mixed step). Host-only:
+        # no sync, no device work. Pairs with the updater-side flat dump.
+        try:
+            import os as _os169r
+            if _os169r.environ.get("R169_FLATDUMP", "0") == "1":
+                _st169r = None
+                for _k169r in (getattr(forward_context, "attn_metadata",
+                                       {}) or {}):
+                    _st169r = forward_context.attn_metadata[_k169r]
+                    break
+                _st169s = str(getattr(_st169r, "attn_state", ""))
+                _g169r = globals().setdefault('_R169_PF_N', [0])
+                if (_g169r[0] < 600
+                        and ("Prefill" in _st169s or _st169s == "Mixed")):
+                    _g169r[0] += 1
+                    import json as _js169r
+                    _bt169r = self.input_batch.block_table
+                    _cpu169r = (_bt169r.get_cpu_tensor()
+                                if hasattr(_bt169r, "get_cpu_tensor")
+                                else _bt169r[0].get_cpu_tensor())
+                    _rec169r = {"n": _g169r[0], "state": _st169s,
+                                "rids": [str(r) for r in (getattr(
+                                    _st169r, "request_ids", None)
+                                    or [])][:16],
+                                "sls": [int(x) for x in (getattr(
+                                    _st169r, "seq_lens_list", None)
+                                    or [])][:16],
+                                "bt0": [int(v) for v in
+                                        _cpu169r[0].tolist()[:256]],
+                                "bt_shape": list(_cpu169r.shape)}
+                    with open("/tmp/r169_pfbt.jsonl", "a") as _f169r:
+                        _f169r.write(_js169r.dumps(_rec169r) + "\n")
+        except Exception:
+            pass
+
        
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.
@@ -2527,10 +2771,31 @@ class NPUModelRunner(GPUModelRunner):
             if self.input_batch.sampling_metadata.top_k is not None and get_ascend_config().enable_reduce_sample:
                 max_topk = self.input_batch.top_k_cpu[self.input_batch.top_k_cpu < logits.shape[1]].max()
                 self.sampler.prepare_sampling(max_topk)
-            return self.sampler(
+            _so = self.sampler(
                 logits=logits,
                 sampling_metadata=sampling_metadata,
             )
+            # R118 teacher forcing (default OFF): overwrite the sampled token
+            # with a fixed sequence so eager and graph decode consume IDENTICAL
+            # inputs every step — exact K/V/attention comparison regardless of
+            # logits noise. Flows through the native async feedback path.
+            _ft = os.environ.get("R118_FORCE_TOKENS", "")
+            if _ft:
+                try:
+                    _seq = [int(x) for x in _ft.split(",") if x != ""]
+                    _c = getattr(type(self), "_r118_force_n", None)
+                    if _c is None:
+                        type(self)._r118_force_n = _c = [0]
+                    if _seq:
+                        _tok = _seq[_c[0] % len(_seq)]
+                        if (_so.sampled_token_ids is not None
+                                and _so.sampled_token_ids.dim() >= 1
+                                and _so.sampled_token_ids.shape[0] > 0):
+                            _so.sampled_token_ids[0] = _tok
+                        _c[0] += 1
+                except Exception as _e:
+                    print(f"[R118-FORCE] {_e}", flush=True)
+            return _so
 
         if lmhead_tp_enable() and logits is not None:
             logits = logits[: len(spec_decode_metadata.logits_indices)]
@@ -2544,6 +2809,72 @@ class NPUModelRunner(GPUModelRunner):
             sampling_metadata,
         )
         return sampler_output
+
+    def _prepare_input_ids(self, scheduler_output, num_reqs,
+                           total_num_scheduled_tokens, cu_num_tokens):
+        """R118 wrapper around the core input-id prep (all features default OFF).
+
+        - R118_INJECT_AT=<k> (+R118_INJECT_VAL, default -1): FAULT INJECTION.
+          At decode step k (counter of _prepare_input_ids calls with
+          total<=16), writes the placeholder value into input_ids.gpu[0] on
+          device — simulating the placeholder-upload defect class (async
+          feedback row excluded from prev_req_id_to_index -> W1 uploads the
+          -1 row), which produces novel K/V with correct in-graph compute.
+        - R118_GRAPH_INPUT_FIX=1: device-side repair — after the core prep,
+          any decode row of input_ids.gpu holding the -1 placeholder is
+          restored from prev_sampled_token_ids[:, 0] (D2D where; no host
+          sync, no D2H, capture-safe: runs outside the graph on the same
+          persistent buffer).
+        - R118_FEEDBACK_DIAG=1: per-step path log (has a host sync; diagnostic
+          legs only).
+        """
+        _inj = os.environ.get("R118_INJECT_AT", "")
+        _fix = os.environ.get("R118_GRAPH_INPUT_FIX", "0") == "1"
+        _diag = os.environ.get("R118_FEEDBACK_DIAG", "0") == "1"
+        if not (_inj or _fix or _diag):
+            return super()._prepare_input_ids(
+                scheduler_output, num_reqs, total_num_scheduled_tokens,
+                cu_num_tokens)
+        _cnt = getattr(type(self), "_r118_prep_n", None)
+        if _cnt is None:
+            type(self)._r118_prep_n = _cnt = [0]
+        _n = _cnt[0]
+        _cnt[0] += 1
+        if _diag:
+            try:
+                import json as _j, time as _t
+                _pv = self.prev_positions.np[:num_reqs].tolist() if getattr(
+                    self, "prev_positions", None) is not None else None
+                _row = {"mode": "fb", "n": _n, "tot": int(total_num_scheduled_tokens),
+                        "prev_positions": _pv,
+                        "ids_cpu0": int(self.input_ids.cpu[0]),
+                        "ids_gpu0": int(self.input_ids.gpu[0].item()),
+                        "t": _t.time_ns()}
+                import r118_trace as _rt
+                with open(_rt.OUT, "a") as _f:
+                    _f.write(_j.dumps(_row) + "\n")
+            except Exception as _e:
+                print(f"[R118-FB-DIAG] {_e}", flush=True)
+        _r = super()._prepare_input_ids(
+            scheduler_output, num_reqs, total_num_scheduled_tokens, cu_num_tokens)
+        if _inj and _n == int(_inj) and total_num_scheduled_tokens <= 16:
+            _val = int(os.environ.get("R118_INJECT_VAL", "-1"))
+            self.input_ids.gpu[0].fill_(_val)
+            print(f"[R118-INJECT] step {_n}: placeholder-token fault injected "
+                  f"(val={_val})", flush=True)
+        if _fix and total_num_scheduled_tokens <= 16:
+            _ps = getattr(self.input_batch, "prev_sampled_token_ids", None)
+            if _ps is not None and _ps.numel() > 0:
+                _rows = min(num_reqs, _ps.shape[0],
+                            self.input_ids.gpu.shape[0])
+                _bad = self.input_ids.gpu[:_rows] < 0
+                self.input_ids.gpu[:_rows] = torch.where(
+                    _bad, _ps[:_rows, 0].to(self.input_ids.gpu.dtype),
+                    self.input_ids.gpu[:_rows])
+                if bool(_bad.any().item()):
+                    print(f"[R118-FIX] step {_n}: repaired placeholder "
+                          f"input-id rows", flush=True)
+        return _r
 
     # TODO: remove this func after eagle_proposer is refactored and
     #  _bookkeeping_sync is moved after propose_draft_token_ids
@@ -2710,6 +3041,38 @@ class NPUModelRunner(GPUModelRunner):
                 torch.npu.current_stream().synchronize()
 
             assert positions is not None
+            # R166_BT_HOST: expose the HOST block table (scheduler truth) to
+            # the R164 update driver — the device md.block_tables is stale in
+            # this composition (MIDPROBE-proven; see _r164_update_meta).
+            try:
+                import os as _os166b
+                try:
+                    import os as _os166w
+                    _ev166 = getattr(self, "_r166_pf_event", None)
+                    if (_ev166 is not None
+                            and _os166w.environ.get("R166_PFEV", "0") == "1"):
+                        self.update_stream.wait_event(_ev166)
+                except Exception:
+                    pass
+                if _os166b.environ.get("R166_BT_HOST", "0") == "1":
+                    from vllm_ascend.attention.attention_v1 import (
+                        AscendAttentionBackendImpl as _A166)
+                    _bt166 = self.input_batch.block_table
+                    if hasattr(_bt166, "get_cpu_tensor"):
+                        _A166._r166_host_bt = _bt166.get_cpu_tensor()
+                    else:
+                        # MultiGroupBlockTable: single kv group -> [0]
+                        _A166._r166_host_bt = _bt166[0].get_cpu_tensor()
+                if _os166b.environ.get("R169_FLATDUMP", "0") == "1":
+                    from vllm_ascend.attention.attention_v1 import (
+                        AscendAttentionBackendImpl as _A169)
+                    _bt169 = self.input_batch.block_table
+                    _A169._r169_host_bt = (
+                        _bt169.get_cpu_tensor()
+                        if hasattr(_bt169, "get_cpu_tensor")
+                        else _bt169[0].get_cpu_tensor())
+            except Exception:
+                pass
             update_full_graph_params(
                 self.attn_backend,
                 self.update_stream,
@@ -2742,20 +3105,367 @@ class NPUModelRunner(GPUModelRunner):
         }
         run_model = partial(self.model, **model_inputs)
 
+        # R170_INPUTDUMP (default OFF): HOST-side expected graph-input values
+        # (pinned-cpu + numpy reads only; no device sync, no perturbation).
+        # Pairs with the consumption-side snapshot in acl_graph.py (r170_stash).
+        try:
+            import os as _os170p
+            if _os170p.environ.get("R170_INPUTDUMP", "0") == "1":
+                import r170_stash as _st170p
+                _md170 = None
+                try:
+                    for _k170 in (getattr(forward_context, "attn_metadata",
+                                          {}) or {}):
+                        _md170 = forward_context.attn_metadata[_k170]
+                        break
+                except Exception:
+                    pass
+                _st170p.row({
+                    "src": "prep", "ntp": int(num_tokens_padded),
+                    "cap": bool(getattr(forward_context, "capturing", False)),
+                    "ids_cpu": (self.input_ids.cpu[:64].tolist()
+                                if self.input_ids is not None else None),
+                    "qpos": (self.query_pos.np[:64].tolist()
+                             if getattr(self, "query_pos", None) is not None
+                             else None),
+                    "nct": (self.num_computed_tokens_cpu[:8].tolist()
+                            if getattr(self, "num_computed_tokens_cpu",
+                                       None) is not None else None),
+                    "state": str(getattr(_md170, "attn_state", "")),
+                    "sls": [int(x) for x in (getattr(_md170,
+                                     "seq_lens_list", None) or [])][:8],
+                })
+        except Exception:
+            pass
+
         if self.enable_enpu:
             # The soft segmentation scenario requires event.record first, then event.wait
             self._update_full_graph_params_if_needed(
                 forward_context, num_tokens_padded, positions
             )
             hidden_states = run_model()
-        else:
-            hidden_states = run_model()
+        elif os.environ.get("R161_FENCE", "0") == "6":
+            # R161 F6 (same-stream serialization, diagnostic): update BEFORE replay,
+            # with a graph-stream sync before update so the previous replay has
+            # finished reading the shared carriers before this step overwrites
+            # them. Eliminates the cross-step / within-step fill-vs-read torn-read
+            # race by construction (no overlap between fill and replay read).
+            torch.npu.current_stream().synchronize()
             self._update_full_graph_params_if_needed(
                 forward_context, num_tokens_padded, positions
             )
+            hidden_states = run_model()
+        else:
+            _evfix = os.environ.get("R167_EVFIX", "0")
+            if _evfix in ("1", "2"):
+                # R167_EVFIX v2 (default OFF): submit the metadata fills + the
+                # E_inputs_ready record BEFORE the replay submission. Root
+                # (probe-proven R167 E1: the first replay's in-graph askv read
+                # = 0 while the device flat held the live value): the captured
+                # graph's only entry edge is its wait on E_inputs_ready, and a
+                # wait on an event with no record yet outstanding is a NO-OP —
+                # with the standard post-replay update order, the graph's flat
+                # reads race the fills (lost deterministically at the first
+                # replay = the all-wrong FIRST generation; won only by
+                # submission latency afterwards). Pre-submitting fills+record
+                # makes the wait block until the record by construction.
+                # v1 called _update_full_graph_params_if_needed, whose gate
+                # (cudagraph_runtime_mode/capturing in the forward context) is
+                # not established at the pre-call point => the update NEVER
+                # RAN (marker/audit absent; B>1 read all-zero flats; B1 fell
+                # back to the empty-middle old canonical). v2 calls
+                # update_full_graph_params DIRECTLY, with the default->update
+                # event edge (bt H2D during input prep is current-stream
+                # async) built in unconditionally.
+                try:
+                    if (not self.use_sparse and not self.use_compress
+                            and not getattr(forward_context, "capturing", False)
+                            and positions is not None):
+                        # R167_EVFIX=2 (h18 postmortem 12:47Z): =1's pf_event
+                        # edge (default-stream record + update_stream
+                        # wait_event) DEADLOCKED the first real step (host
+                        # blocked in hdcdrv/dms_event_wait on a device op
+                        # that never completed; evdbg frozen at 240 warmup
+                        # oks, zero outlse for the real request). =2
+                        # pre-submits WITHOUT the edge — fills+record alone;
+                        # discriminates edge vs pre-submit itself. =1 kept
+                        # byte-identical; default OFF.
+                        if _evfix == "1":
+                            if getattr(self, "_r167_pf_event", None) is None:
+                                self._r167_pf_event = torch.npu.Event()
+                            self._r167_pf_event.record()
+                            self.update_stream.wait_event(self._r167_pf_event)
+                        update_full_graph_params(
+                            self.attn_backend,
+                            self.update_stream,
+                            forward_context,
+                            num_tokens_padded,
+                            self.vllm_config,
+                            self.speculative_config,
+                            positions.shape[0],
+                        )
+                        _r167_dbg("evfix_pre_update_ok", ntp=num_tokens_padded)
+                except Exception as _e167d:
+                    _r167_dbg("evfix_pre_update_ERR", err=repr(_e167d)[:200])
+                hidden_states = run_model()
+            else:
+                # R170_MDFILL (default OFF): defect-A fix attempt 3. At each
+                # bucket's FIRST replay, pre-fill the metadata flat with real
+                # values (record-free; see attention_v1._r170_mdfill). EVFIX
+                # =1/=2 pre-submitted the WHOLE update and deadlocked on the
+                # graph-task lifecycle (h18/h19); MDFILL touches ONLY the
+                # flat fills — no per-layer task updates, no event record.
+                try:
+                    if (os.environ.get("R170_MDFILL", "0") == "1"
+                            and positions is not None
+                            and not getattr(forward_context, "capturing",
+                                            False)):
+                        _bk = int(num_tokens_padded)
+                        _seen = getattr(self, "_r170_mdfill_seen", None)
+                        if _seen is None:
+                            _seen = self._r170_mdfill_seen = set()
+                        # R218 GEN-SCOPE (2026-10-17): a bucket's FIRST replay of
+                        # EVERY GENERATION needs the pre-fill, not just its first
+                        # replay of the PROCESS. The old key was the bucket alone,
+                        # so the second generate() call reused warm0's buckets and
+                        # silently skipped the pre-fill -- the row0@3 flip came
+                        # back on warm1 (peer-reproduced). Key on
+                        # (bucket, live request_ids); bounded for long runs.
+                        _rd_r = ()
+                        try:
+                            for _k_r in forward_context.attn_metadata:
+                                _md_r = forward_context.attn_metadata[_k_r]
+                                _rd_r = tuple(getattr(_md_r, "request_ids",
+                                                      None) or ())
+                                break
+                        except Exception:
+                            _rd_r = ()
+                        _bkey_r = (_bk, _rd_r)
+                        if len(_seen) > 4096:
+                            _seen.clear()
+                        if _bkey_r not in _seen:
+                            _ic = self.attn_backend.get_impl_cls()
+                            if _ic._r170_mdfill(self.update_stream,
+                                                forward_context, _bk):
+                                _seen.add(_bkey_r)
+                                _r167_dbg("mdfill_ok", ntp=_bk)
+                except Exception as _e170m:
+                    _r167_dbg("mdfill_ERR", err=repr(_e170m)[:200])
+                # R171_PREMIG: migrate moved INTO the acl_graph wrapper's
+                # post-need_sync pre-replay window (the native FULL-graph
+                # ordering contract; device quiescent there). No enqueue at
+                # this model_runner level — enqueuing here (before the
+                # wrapper's drain) hung 3 legs (r171d/e).
+                # R194_STEPPROF (DIAGNOSTIC_ONLY/NEVER_PROMOTE/default OFF):
+                # host phase timers around the default replay branch:
+                # prep = branch-entry->run_model, model = run_model wall,
+                # update = post-replay params update wall.
+                _sp194 = os.environ.get("R194_STEPPROF", "0") == "1"
+                _sp194_t0 = time.perf_counter() if _sp194 else 0.0
+                if _sp194:
+                    _sp194_t1 = time.perf_counter()
+                else:
+                    _sp194_t1 = 0.0
+                hidden_states = run_model()
+                _sp194_t2 = time.perf_counter() if _sp194 else 0.0
+                # R166_PFEV (default OFF): the missing DEFAULT->UPDATE edge. The
+                # update-stream fills/gathers (bt_mirror, mid carriers) read the
+                # paged cache + ring written by THIS step's eager forward on the
+                # default stream; no fence mode covers default->update (F1/F3 =
+                # replay<->update, F2 = fill->replay). Record an event on the
+                # default stream after the model and make the update stream wait
+                # it before any update enqueue (causally proven necessary at B1:
+                # PFSYNC/WSYNC syncs cure the freshest-prefill-row corruption).
+                try:
+                    import os as _os166e
+                    if _os166e.environ.get("R166_PFEV", "0") == "1":
+                        if getattr(self, "_r166_pf_event", None) is None:
+                            self._r166_pf_event = torch.npu.Event()
+                        self._r166_pf_event.record()
+                        # v2: the WAIT belongs HERE (non-ENPU path, before the
+                        # update enqueues) — v1's wait sat in the ENPU branch and
+                        # never ran (record-only = no-op ordering).
+                        self.update_stream.wait_event(self._r166_pf_event)
+                except Exception:
+                    pass
+                self._update_full_graph_params_if_needed(
+                    forward_context, num_tokens_padded, positions
+                )
+                if _sp194:
+                    _sp194_t3 = time.perf_counter()
+                    _sp194_n = globals().setdefault('_R194_SP_N', [0])
+                    _sp194_n[0] += 1
+                    if _sp194_n[0] <= 4000:
+                        try:
+                            import json as _js194
+                            with open("/tmp/r194_stepprof.jsonl", "a") as _f194:
+                                _f194.write(_js194.dumps({
+                                    "n": _sp194_n[0], "ntp": int(num_tokens_padded),
+                                    "prep_ms": round((_sp194_t1 - _sp194_t0) * 1e3, 2),
+                                    "model_ms": round((_sp194_t2 - _sp194_t1) * 1e3, 2),
+                                    "update_ms": round((_sp194_t3 - _sp194_t2) * 1e3, 2),
+                                }) + "\n")
+                        except Exception:
+                            pass
+        if os.environ.get("R168_MIDIN", "0") == "1":
+            # R168 P0-A/P1: post-replay carrier INPUT checksums (mid op inputs
+            # staged in-graph by the replay's index_select). B8-vs-B1 row-wise
+            # equality decides kernel-tiling numeric (E-class) vs staging bug.
+            try:
+                import json as _jm168
+                import torch as _t168
+                from vllm_ascend.attention.attention_int2 import (
+                    AscendINT2AttentionBackendImpl as _A168i)
+                from vllm_ascend.attention.attention_v1 import (
+                    AscendAttentionBackendImpl as _A168b)
+                _cpm = (getattr(_A168i, "_r113_cpool_batched", None)
+                        or getattr(_A168b, "_r113_cpool_batched", None) or {})
+                _nt168 = int(num_tokens_padded or 0)
+                if _cpm and _nt168 >= 1:
+                    _t168.npu.synchronize()
+                    _mn168 = globals().setdefault('_R168_MIDIN2_N', [0])
+                    _rids168 = []
+                    try:
+                        _rids168 = [str(r) for r in self.input_batch.req_ids[:8]]
+                    except Exception:
+                        pass
+                    _mmx168 = int(os.environ.get("R168_MIDIN_MAX", "4000"))
+                    _lfl168 = os.environ.get("R168_MIDIN_LIDS", "").replace(" ", "")
+                    _lfs168 = ({int(_x) for _x in _lfl168.split(",") if _x != ""}
+                               if _lfl168 else None)
+                    for (_lid168, _bcap168), _c168 in sorted(_cpm.items()):
+                        if (int(_bcap168) != _nt168 or _mn168[0] >= _mmx168
+                                or (_lfs168 is not None
+                                    and int(_lid168) not in _lfs168)):
+                            continue
+                        _mn168[0] += 1
+                        _k168 = _c168["k"].float()
+                        _v168 = _c168["v"].float()
+                        _kb = _k168.reshape(int(_bcap168), -1).abs().sum(dim=1).tolist() \
+                            if _k168.numel() else []
+                        _vb = _v168.reshape(int(_bcap168), -1).abs().sum(dim=1).tolist() \
+                            if _v168.numel() else []
+                        _ksl = _k168.reshape(int(_bcap168), -1)[:, :6].tolist() \
+                            if _k168.numel() else []
+                        _ksq = _k168.reshape(int(_bcap168), -1).square().sum(dim=1).tolist() \
+                            if _k168.numel() else []
+                        _nbm168 = int(_c168.get("nb_max", 0) or 0)
+                        _kbk = []
+                        if _k168.numel() and _nbm168 and (_k168.numel() % (int(_bcap168) * _nbm168) == 0):
+                            _kbk = _k168.reshape(int(_bcap168), _nbm168, -1).abs().sum(dim=2) \
+                                .to(torch.float32).tolist()
+                        with open("/tmp/r168_midin.jsonl", "a") as _f168:
+                            _f168.write(_jm168.dumps({
+                                "n": _mn168[0], "lid": int(_lid168), "bcap": int(_bcap168),
+                                "nt": _nt168, "rids": _rids168,
+                                "askv": [int(x) for x in _c168["askv_dev"][:int(_bcap168)].tolist()],
+                                "k": [round(x, 3) for x in _kb],
+                                "v": [round(x, 3) for x in _vb],
+                                "ksq": [round(x, 3) for x in _ksq],
+                                "kb": [[round(y, 1) for y in _row] for _row in _kbk],
+                                "ksl": [[round(float(y), 4) for y in _r] for _r in _ksl],
+                                "ks": round(float(_c168["ks"].float().sum()), 3),
+                                "ko": round(float(_c168["ko"].float().sum()), 3),
+                                "vs": round(float(_c168["vs"].float().sum()), 3),
+                                "vo": round(float(_c168["vo"].float().sum()), 3),
+                            }) + "\n")
+                        if int(_lid168) == 0:
+                            try:
+                                try:
+                                    _meta168 = getattr(_A168i, "_r164_meta", None) or {}
+                                    _me168 = None
+                                    for _bk168 in sorted(_meta168, reverse=True):
+                                        _me168 = _meta168[_bk168]
+                                        break
+                                    _bm168 = (_me168 or {}).get("bt_mirror")
+                                    _iref168 = getattr(_A168i, "_r168_impl_ref", None)
+                                    _kc168 = getattr(_iref168, "key_cache", None)
+                                    if _bm168 is not None and _kc168 is not None:
+                                        _bmh168 = _bm168.reshape(-1).tolist()
+                                        _nbm168 = int(_me168.get("nb_max", 24))
+                                        _rows168 = []
+                                        for _r168 in range(min(8, len(_bmh168) // _nbm168)):
+                                            _ids168 = _bmh168[_r168*_nbm168:(_r168+1)*_nbm168]
+                                            _vals168 = []
+                                            for _bid168 in _ids168[:26]:
+                                                _bid168 = int(_bid168)
+                                                if 0 <= _bid168 < int(_kc168.shape[0]):
+                                                    _vals168.append(round(float(
+                                                        _kc168[_bid168].float().sum()), 1))
+                                                else:
+                                                    _vals168.append(-1.0)
+                                            _rows168.append(([_ids168[:26]], _vals168))
+                                        with open("/tmp/r168_pg.jsonl", "a") as _fpg168:
+                                            _fpg168.write(_jm168.dumps({
+                                                "nt": _nt168,
+                                                "rows": [{"bt": _a[0], "k": _b}
+                                                         for _a, _b in _rows168]}) + "\n")
+                                except Exception as _e168c:
+                                    print("[R168-MIDIN] pg fail: %s" % _e168c, flush=True)
+                            except Exception as _e168b:
+                                print("[R168-MIDIN] pg fail: %s" % _e168b, flush=True)
+                        if int(_lid168) == 0:
+                            try:
+                                _irefS168 = getattr(_A168i, "_r168_impl_ref", None)
+                                if _irefS168 is not None:
+                                    _hkR168 = _irefS168._tt_hp_bufs(0, None, torch.bfloat16)
+                                    _ns168 = int(_hkR168[0].shape[0])
+                                    _nrp168 = min(8, _ns168)
+                                    _hkR0168 = _hkR168[0][:_nrp168]
+                                    _rs2168 = [round(_x, 2) for _x in
+                                               _hkR0168.float().abs()
+                                               .reshape(_nrp168, -1)
+                                               .sum(dim=1).flatten().tolist()]
+                                    _rv2168 = _hkR168[1][:_nrp168].float().abs() \
+                                        .reshape(_nrp168, -1).sum(dim=1).tolist()
+                                    with open("/tmp/r168_sr.jsonl", "a") as _fsr168:
+                                        _fsr168.write(_jm168.dumps({
+                                            "nt": _nt168,
+                                            "ring_k": [round(x, 2) for x in _rs2168],
+                                            "ring_v": [round(x, 2) for x in _rv2168]}) + "\n")
+                            except Exception as _e168e:
+                                print("[R168-MIDIN] sr fail: %s" % _e168e, flush=True)
+            except Exception as _e168:
+                print("[R168-MIDIN] dump fail: %s" % _e168, flush=True)
 
         if forward_context.flash_comm_v1_enabled and not isinstance(hidden_states, IntermediateTensors):
             hidden_states = self._all_gather_hidden_states_and_aux(hidden_states)
+        # R164 STEPDUMP (default OFF): per-execute_model record of the batch
+        # INPUT side — request ids, input tokens, positions, seq_lens — so the
+        # "+1 inserted token" can be adjudicated as scheduler/bookkeeping vs
+        # model-logits divergence BEFORE any tier numerics. temp=0 =>
+        # sampled == argmax; the output token stream is known from the harness.
+        if os.environ.get("R164_STEPDUMP", "0") == "1":
+            try:
+                import json as _j164s
+                _sd = globals().setdefault('_R164_STEP_N', [0])
+                _n = _sd[0]
+                _sd[0] += 1
+                _md = None
+                for _k in forward_context.attn_metadata:
+                    _md = forward_context.attn_metadata[_k]
+                    break
+                _sl = list(_md.seq_lens_list)[:64] if _md is not None else []
+                _ids = input_ids.tolist()[:64] if input_ids is not None else []
+                _pos = positions.tolist()[:64] if positions is not None else []
+                _rids = []
+                try:
+                    _rids = [str(r) for r in self.input_batch.req_ids[:len(_sl)]]
+                except Exception:
+                    pass
+                _nct = []
+                try:
+                    _nct = [int(scheduler_output.num_computed_tokens[r])
+                            for r in self.input_batch.req_ids[:len(_sl)]]
+                except Exception:
+                    pass
+                with open("/tmp/r164_steps.jsonl", "a") as _f164s:
+                    _f164s.write(_j164s.dumps(
+                        {"n": _n, "ntok": len(_ids) if input_ids is not None else -1,
+                         "rids": _rids, "ids": _ids, "pos": _pos, "sl": _sl,
+                         "nct": _nct}) + "\n")
+            except Exception:
+                pass
         return hidden_states
 
     def _pad_for_sequence_parallelism(self, num_scheduled_tokens: int) -> int:
@@ -3095,6 +3805,15 @@ class NPUModelRunner(GPUModelRunner):
             attn_state=self.attn_state,
             decode_token_per_req=self.decode_token_per_req,
             prefill_context_parallel_metadata=self.long_seq_metadata,
+            # R144 P0: stable request identity (req_id strings, batch_idx->req_id)
+            # from InputBatch. Explicit add/remove lifecycle via SchedulerOutput
+            # (scheduled_new_reqs/finished_req_ids). Sliced to num_reqs (live);
+            # padding rows [num_reqs:num_reqs_padded] have no req_id (inert dummy).
+            request_ids=self.input_batch.req_ids[:num_reqs],
+            # R144 P0.1: explicit lifecycle events (stashed in _update_states).
+            finished_req_ids=getattr(self, "_r144_finished", None),
+            preempted_req_ids=getattr(self, "_r144_preempted", None),
+            new_req_ids=getattr(self, "_r144_new", None),
         )
 
         if logits_indices is not None and self.cache_config.kv_sharing_fast_prefill:
@@ -3744,6 +4463,24 @@ class NPUModelRunner(GPUModelRunner):
         """
         # Initialize the memory buffer for KV cache
         kv_cache_raw_tensors = self._allocate_kv_cache_tensors(kv_cache_config)
+        # R156-H4 (default OFF): consolidate EQUAL-SIZE int8 raw cache tensors
+        # into ONE backing buffer so the middle-carrier staging can gather
+        # every layer's pages in a single index op (~15 launches/step instead
+        # of ~430; the update-stream per-launch wall is ~80us device-side).
+        # Byte-for-byte identical semantics: same shapes, zeros, per-layer
+        # views into one allocation.
+        import os as _os156h4
+        if _os156h4.environ.get("R156_H4", "0") == "1":
+            _groups = {}
+            for _ln, _t in kv_cache_raw_tensors.items():
+                if (isinstance(_t, torch.Tensor) and _t.dtype == torch.int8
+                        and _t.dim() == 1):
+                    _groups.setdefault((_t.dtype, _t.numel()), []).append(_ln)
+            for (_dt, _sz), _lns in _groups.items():
+                if len(_lns) > 1:
+                    _buf = torch.zeros(len(_lns) * _sz, dtype=_dt, device=self.device)
+                    for _i, _ln in enumerate(sorted(_lns)):
+                        kv_cache_raw_tensors[_ln] = _buf[_i * _sz:(_i + 1) * _sz]
         # Change the memory buffer to the desired shape
         kv_caches = self._reshape_kv_cache_tensors(kv_cache_config, kv_cache_raw_tensors)
 
@@ -4152,7 +4889,8 @@ class NPUModelRunner(GPUModelRunner):
                     kv_cache_shape = self.attn_backend.get_kv_cache_shape(
                         num_blocks, current_kv_cache_spec.block_size,
                         current_kv_cache_spec.num_kv_heads,
-                        current_kv_cache_spec.head_size)
+                        current_kv_cache_spec.head_size,
+                        cache_dtype_str=self.vllm_config.cache_config.cache_dtype)
                     kv_cache_shape_list = [kv_cache_shape]
                     kv_cache_dtype_list = [current_kv_cache_spec.dtype]
                     overlap_full_kv_cache = False
@@ -4162,7 +4900,8 @@ class NPUModelRunner(GPUModelRunner):
                         indexer_scale_shape = self.attn_backend.get_kv_cache_shape(
                                                 num_blocks, current_kv_cache_spec.block_size,
                                                 current_kv_cache_spec.num_kv_heads,
-                                                current_kv_cache_spec.scale_dim
+                                                current_kv_cache_spec.scale_dim,
+                                                cache_dtype_str=self.vllm_config.cache_config.cache_dtype
                                                 )
                         if get_ascend_device_type() in {AscendDeviceType.A5}:
                             indexer_full_shape = self.attn_backend.get_kv_cache_shape(
@@ -4170,7 +4909,8 @@ class NPUModelRunner(GPUModelRunner):
                                 current_kv_cache_spec.num_kv_heads,
                                 current_kv_cache_spec.head_size
                                 + current_kv_cache_spec.scale_dim
-                                * get_dtype_size(current_kv_cache_spec.scale_dtype))
+                                * get_dtype_size(current_kv_cache_spec.scale_dtype),
+                                cache_dtype_str=self.vllm_config.cache_config.cache_dtype)
                             kv_cache_shape_list = [
                                 indexer_k_shape, indexer_scale_shape, indexer_full_shape
                             ]
@@ -4256,6 +4996,7 @@ class NPUModelRunner(GPUModelRunner):
                             current_kv_cache_spec.block_size,
                             current_kv_cache_spec.num_kv_heads,
                             current_kv_cache_spec.head_size,
+                            cache_dtype_str=self.vllm_config.cache_config.cache_dtype,
                         )
                         raw_tensor = raw_tensor.view(current_kv_cache_spec.dtype)
                         page_size_padded = getattr(
@@ -4301,12 +5042,16 @@ class NPUModelRunner(GPUModelRunner):
                         block_size = attn_backend.get_supported_kernel_block_sizes()[0]
 
                         block_size_chunk = current_kv_cache_spec.block_size // block_size
+                        _cdt = self.vllm_config.cache_config.cache_dtype
+                        print(f"[DEBUG-INT2-HYBRID] layer={layer_name} cache_dtype='{_cdt}' block_size_chunk={block_size_chunk} head_size={current_kv_cache_spec.head_size}", flush=True)
                         kv_cache_shape = attn_backend.get_kv_cache_shape(
                             num_blocks * block_size_chunk,
                             block_size,
                             current_kv_cache_spec.num_kv_heads,
                             current_kv_cache_spec.head_size,
+                            cache_dtype_str=_cdt,
                         )
+                        print(f"[DEBUG-INT2-HYBRID] returned shape: {kv_cache_shape}", flush=True)
                         if self.hybrid_with_attn_and_mamba:
                             if not isinstance(current_kv_cache_spec, MLAAttentionSpec):
                                 attn_tensor_page_size = int(np.prod(kv_cache_shape[1:])) * get_dtype_size(
@@ -4329,12 +5074,16 @@ class NPUModelRunner(GPUModelRunner):
                                 raw_k_tensor = raw_kv_tensor[:nope_page_size]
                                 raw_v_tensor = raw_kv_tensor[nope_page_size:]
                     else:
+                        _cache_dt = self.vllm_config.cache_config.cache_dtype
+                        print(f"[DEBUG-INT2] layer={layer_name} cache_dtype_str='{_cache_dt}' num_blocks={num_blocks} head_size={current_kv_cache_spec.head_size}", flush=True)
                         kv_cache_shape = attn_backend.get_kv_cache_shape(
                             num_blocks,
                             current_kv_cache_spec.block_size,
                             current_kv_cache_spec.num_kv_heads,
                             current_kv_cache_spec.head_size,
+                            cache_dtype_str=_cache_dt,
                         )
+                        print(f"[DEBUG-INT2] get_kv_cache_shape returned: {kv_cache_shape}", flush=True)
                     if not isinstance(current_kv_cache_spec, MLAAttentionSpec):
                         k_shape = kv_cache_shape[1:]
                         if hasattr(current_kv_cache_spec, "head_size_v"):
@@ -4375,11 +5124,23 @@ class NPUModelRunner(GPUModelRunner):
                         k_cache_dtype, v_cache_dtype = self.vllm_config.quant_config.get_kv_quant_dtype(
                             layer_name, current_kv_cache_spec.dtype, self.model_config
                         )
-                    
+
+                    # INT2 KV cache: override dtype to uint8 and adjust shape
+                    _int2_mode = (self.vllm_config.cache_config.cache_dtype == "int2_per_token_head")
+                    if _int2_mode:
+                        k_cache_dtype = v_cache_dtype = torch.uint8
+                        # k_shape and v_shape should already have head_size//4 from get_kv_cache_shape
+                        # but let's ensure it's correct
+                        _expected_packed = current_kv_cache_spec.head_size // 4
+                        if k_shape[-1] != _expected_packed:
+                            k_shape = (*k_shape[:-1], _expected_packed)
+                        if v_shape[-1] != _expected_packed:
+                            v_shape = (*v_shape[:-1], _expected_packed)
+
                     # A5 sparse C8: ckv uses float8_e4m3fn
                     if self.use_sparse and current_sparse_c8 and get_ascend_device_type() == AscendDeviceType.A5:
                         k_cache_dtype = self.c8_k_cache_dtype
-                    
+
                     k_cache = raw_k_tensor.view(k_cache_dtype).view(k_shape)
                     if self.use_sparse and current_sparse_c8 and get_ascend_device_type() == AscendDeviceType.A5:
                         v_cache = None
@@ -4898,7 +5659,7 @@ class NPUModelRunner(GPUModelRunner):
         self._kv_block_zeroer.init_meta(
             attn_groups_iter=self._kv_cache_spec_attn_group_iterator(),
             kernel_block_sizes=self.kernel_block_sizes,
-            cache_dtype=self.cache_config.cache_dtype,
+            cache_dtype=self.vllm_config.cache_config.cache_dtype,
             runner_only_attn_layers=self.runner_only_attn_layers,
             static_forward_context=(self.compilation_config.static_forward_context),
         )
@@ -5009,3 +5770,122 @@ def update_pass_config(model_runner):
         yield
     finally:
         model_runner.compilation_config.pass_config.enable_sp = original_pass_config_sp
+
+
+# R195_HPROF (DIAGNOSTIC_ONLY/NEVER_PROMOTE/default OFF): wall-clock marks
+# around NPUModelRunner.execute_model / sample_tokens. Wrapping AFTER class
+# definition catches every return path without touching the bodies; zero
+# overhead when R195_HPROF!=1. See the R195_HPROF block at module top for the
+# region decomposition of the B32 decode host gap.
+try:
+    if _R195_HP:
+        _r195_orig_exec = NPUModelRunner.execute_model
+        _r195_orig_sample = NPUModelRunner.sample_tokens
+
+        def _r195_execute_model(self, scheduler_output, *args, **kwargs):
+            _ntp195 = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0)
+            _R195_ST["n"] += 1
+            _r195_mark("mrx_in", _ntp195)
+            _r195_maybe_cprof(_ntp195)
+            try:
+                return _r195_orig_exec(self, scheduler_output, *args, **kwargs)
+            finally:
+                _r195_mark("mrx_out", _ntp195)
+                _r195_maybe_cprof_stop()
+
+        def _r195_sample_tokens(self, *args, **kwargs):
+            _r195_mark("st_in")
+            try:
+                return _r195_orig_sample(self, *args, **kwargs)
+            finally:
+                _r195_mark("st_out")
+
+        NPUModelRunner.execute_model = _r195_execute_model
+        NPUModelRunner.sample_tokens = _r195_sample_tokens
+except Exception:
+    pass
+
+# R201_KPROF (DIAGNOSTIC_ONLY/NEVER_PROMOTE/default OFF): torch_npu profiler
+# around WHOLE execute_model calls of the N-th occurrence of a "big" step
+# (total_num_scheduled_tokens in [R201_KPROF_LO, R201_KPROF_HI], default
+# [8000, 8192] = the ntp=8192 prefill class), running INSIDE the EngineCore
+# process (the parent-process profiler sees no child NPU activity — that is
+# why the harness-side R201_KPROF=1 attempt exported nothing). Occurrence
+# indices come from R201_KPROF_IDX (comma list, default "0"); one chrome
+# trace per index at $R201_KPROF_DIR/step_<idx>.json. Wrapping the whole
+# execute_model covers attention + FFN + sampling of exactly one step.
+try:
+    _R201_KP = os.environ.get("R201_KPROF", "0") == "2"
+    if _R201_KP:
+        _r201_lo = int(os.environ.get("R201_KPROF_LO", "8000"))
+        _r201_hi = int(os.environ.get("R201_KPROF_HI", "8192"))
+        _r201_idx = [int(x) for x in os.environ.get("R201_KPROF_IDX", "0").split(",") if x != ""]
+        _r201_od = os.environ.get("R201_KPROF_DIR", "/tmp/r201_kprof")
+        _r201_orig_exec = NPUModelRunner.execute_model
+        _R201_ST = {"seen": 0, "active": None, "active_idx": -1}
+
+        def _r201_execute_model(self, scheduler_output, *args, **kwargs):
+            _ntp = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0)
+            _big = _r201_lo <= _ntp <= _r201_hi
+            _start = False
+            if _big:
+                _i = _R201_ST["seen"]
+                _R201_ST["seen"] = _i + 1
+                import time as _t201
+                _npf = _ndc = -1
+                _sls = []
+                try:
+                    from vllm import forward_context as _fc201
+                    _fwd201 = getattr(_fc201, "attn_metadata", None) or {}
+                    _md1 = None
+                    for _k201 in _fwd201:
+                        _md1 = _fwd201[_k201]
+                        break
+                    _npf = int(getattr(_md1, "num_prefills", -1) or 0)
+                    _ndc = int(getattr(_md1, "num_decodes", -1) or 0)
+                    _sls = [int(x) for x in (getattr(_md1, "seq_lens_list", None) or [])][:6]
+                except Exception:
+                    pass
+                try:
+                    print("[R201_BIG] occ=%d ntp=%d npf=%d ndc=%d sls6=%s t=%.3f"
+                          % (_i, _ntp, _npf, _ndc, _sls, _t201.time()), flush=True)
+                except Exception:
+                    pass
+                if _i in _r201_idx and _R201_ST["active"] is None:
+                    import torch_npu.profiler as _tnp201
+                    from torch_npu.profiler import ProfilerActivity as _PA201
+                    import os as _os201
+                    _os201.makedirs(_r201_od, exist_ok=True)
+                    _kw201 = {}
+                    try:
+                        from torch_npu.profiler.experimental_config import (
+                            _ExperimentalConfig as _EC201)
+                        _kw201["experimental_config"] = _EC201(
+                            profiler_level="Level1")
+                    except Exception:
+                        pass
+                    _R201_ST["active"] = _tnp201.profile(
+                        activities=[_PA201.CPU, _PA201.NPU],
+                        schedule=None, record_shapes=False, **_kw201)
+                    _R201_ST["active"].__enter__()
+                    _R201_ST["active_idx"] = _i
+                    _start = True
+            try:
+                return _r201_orig_exec(self, scheduler_output, *args, **kwargs)
+            finally:
+                if _start and _R201_ST["active"] is not None:
+                    _p = _R201_ST["active"]
+                    _R201_ST["active"] = None
+                    try:
+                        _p.__exit__(None, None, None)
+                        _p.export_chrome_trace(
+                            _r201_od + "/step_%d.json" % _R201_ST["active_idx"])
+                    except Exception as _e201:
+                        try:
+                            print("[R201_KPROF] export failed %r" % (_e201,), flush=True)
+                        except Exception:
+                            pass
+
+        NPUModelRunner.execute_model = _r201_execute_model
+except Exception:
+    pass

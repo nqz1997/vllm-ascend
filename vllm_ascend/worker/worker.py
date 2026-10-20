@@ -20,6 +20,7 @@
 import copy
 import gc
 import logging
+import os
 from types import NoneType
 
 import torch
@@ -547,6 +548,12 @@ class NPUWorker(WorkerBase):
         self.available_kv_cache_memory_bytes = (
             self.requested_memory - profile_result.non_kv_cache_memory - npugraph_memory_estimate_applied
         )
+        # R150 P3: optional KV-pool BYTES cap (default OFF). INT2 pools reserve
+        # 4x tokens per byte vs BF16; vLLM fills all available HBM with blocks
+        # the tested (B, MML) can never use, squeezing prefill workspace.
+        _r150_mcap = float(os.environ.get("R150_MAX_KV_GB", "0"))
+        if _r150_mcap > 0 and self.available_kv_cache_memory_bytes > _r150_mcap * (1 << 30):
+            self.available_kv_cache_memory_bytes = int(_r150_mcap * (1 << 30))
 
         logger.debug(profile_result)
         logger.info_once(
