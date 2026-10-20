@@ -658,3 +658,10 @@ def _oscar_diag_write(relname, text):
     write(relname, text)
 
 from vllm_ascend.oscar.rotation import load_oscar_rotations  # noqa: F401
+
+
+def _oscar_dbg(*args, **kwargs):
+    # gated debug print for INT2 paths; no-op unless SGLANG_OSCAR_DEBUG set
+    import os as _os
+    if _os.environ.get("SGLANG_OSCAR_DEBUG"):
+        print(*args, **kwargs)
