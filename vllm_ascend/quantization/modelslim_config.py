@@ -477,16 +477,23 @@ class AscendModelSlimConfig(QuantizationConfig):
             logger.info("Applied hf_to_vllm_mapper to quant_description keys")
 
     def get_cache_scale(self, name: str) -> str | None:
-        """Map checkpoint C8 KV scale/offset names to vLLM parameter names."""
-        if self.quant_description.get("kv_cache_type") != "C8":
+        """Map checkpoint C8/INT2 KV scale names to vLLM parameter names."""
+        kv_type = self.quant_description.get("kv_cache_type", "")
+        if kv_type not in ("C8", "INT2"):
             return None
-        _C8_SCALE_MAPPING = {
-            "k_proj.kv_cache_scale": "attn.k_cache_scale",
-            "k_proj.kv_cache_offset": "attn.k_cache_offset",
-            "v_proj.kv_cache_scale": "attn.v_cache_scale",
-            "v_proj.kv_cache_offset": "attn.v_cache_offset",
-        }
-        for src_suffix, dst_suffix in _C8_SCALE_MAPPING.items():
+        if kv_type == "C8":
+            _SCALE_MAPPING = {
+                "k_proj.kv_cache_scale": "attn.k_cache_scale",
+                "k_proj.kv_cache_offset": "attn.k_cache_offset",
+                "v_proj.kv_cache_scale": "attn.v_cache_scale",
+                "v_proj.kv_cache_offset": "attn.v_cache_offset",
+            }
+        else:  # INT2: symmetric, scales only
+            _SCALE_MAPPING = {
+                "k_proj.kv_cache_scale": "attn.k_cache_scale",
+                "v_proj.kv_cache_scale": "attn.v_cache_scale",
+            }
+        for src_suffix, dst_suffix in _SCALE_MAPPING.items():
             if name.endswith(src_suffix):
                 return name[: -len(src_suffix)] + dst_suffix
         return None
@@ -560,6 +567,11 @@ class AscendModelSlimConfig(QuantizationConfig):
 
             logger.debug("Select AscendKVCacheMethod(C8) for %s (layer=%s)", prefix, "AttentionLayerBase[C8]")
             return AscendKVCacheMethod(AscendC8KVCacheAttentionMethod(self.quant_description, prefix))
+        elif isinstance(layer, AttentionLayerBase) and self.is_int2_quant_layer(prefix):
+            from .methods.kv_int2 import AscendINT2KVCacheAttentionMethod
+
+            logger.debug("Select AscendKVCacheMethod(INT2) for %s (layer=%s)", prefix, "AttentionLayerBase[INT2]")
+            return AscendKVCacheMethod(AscendINT2KVCacheAttentionMethod(self.quant_description, prefix))
         elif isinstance(layer, FusedMoE):
             if self.is_layer_skipped_ascend(prefix, self.packed_modules_mapping):
                 # Delayed import to avoid circular import
@@ -638,6 +650,13 @@ class AscendModelSlimConfig(QuantizationConfig):
         if self.enable_c8_quant:
             layer_id_str = "".join(re.findall(r"\.(\d+)\.", prefix))
             if layer_id_str.isdigit() and int(layer_id_str) in self.c8_quant_layers:
+                return True
+        return False
+
+    def is_int2_quant_layer(self, prefix):
+        if self.enable_int2_quant:
+            layer_id_str = "".join(re.findall(r"\.(\d+)\.", prefix))
+            if layer_id_str.isdigit() and int(layer_id_str) in self.int2_quant_layers:
                 return True
         return False
 
@@ -828,7 +847,9 @@ class AscendModelSlimConfig(QuantizationConfig):
         kv_quant_type = self.quant_description.get("kv_cache_type", "")
         self.enable_c8_quant = kv_quant_type == "C8"
         self.c8_quant_layers = []
-        if self.enable_fa_quant or self.enable_indexer_quant or self.enable_c8_quant:
+        self.enable_int2_quant = kv_quant_type == "INT2"
+        self.int2_quant_layers = []
+        if self.enable_fa_quant or self.enable_indexer_quant or self.enable_c8_quant or self.enable_int2_quant:
             for key in self.quant_description:
                 _id = "".join(re.findall(r"\.(\d+)\.", key))
                 if "fa_k.scale" in key:
@@ -836,4 +857,7 @@ class AscendModelSlimConfig(QuantizationConfig):
                 if "indexer.quant_type" in key:
                     self.indexer_quant_layers.append(int(_id))
                 if "k_proj.kv_cache_scale" in key:
-                    self.c8_quant_layers.append(int(_id))
+                    if self.enable_c8_quant:
+                        self.c8_quant_layers.append(int(_id))
+                    elif self.enable_int2_quant:
+                        self.int2_quant_layers.append(int(_id))

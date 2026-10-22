@@ -83,3 +83,96 @@ class TestScaleWeightLoader:
             _int2_kv_scale_weight_loader(p, loaded)
             # rank 1 of 4 heads -> rows 2:4
             assert torch.equal(p.data, loaded[2:4])
+
+
+class TestModelSlimInt2ScaleMapping:
+    """PR-21 wiring: get_cache_scale must map INT2 scales (symmetric, no
+    offsets) and keep the C8 mapping intact."""
+
+    def _scale(self, kv_type, name):
+        from types import SimpleNamespace
+        from vllm_ascend.quantization import modelslim_config as msc
+        return msc.AscendModelSlimConfig.get_cache_scale(
+            SimpleNamespace(quant_description={"kv_cache_type": kv_type}), name)
+
+    def test_int2_scales_map_and_offsets_are_none(self):
+        assert self._scale(
+            "INT2", "model.layers.3.self_attn.k_proj.kv_cache_scale"
+        ) == "model.layers.3.self_attn.attn.k_cache_scale"
+        assert self._scale(
+            "INT2", "model.layers.3.self_attn.v_proj.kv_cache_scale"
+        ) == "model.layers.3.self_attn.attn.v_cache_scale"
+        assert self._scale(
+            "INT2", "model.layers.3.self_attn.k_proj.kv_cache_offset") is None
+
+    def test_c8_mapping_unchanged(self):
+        for suffix, dst in [
+            ("k_proj.kv_cache_scale", "attn.k_cache_scale"),
+            ("k_proj.kv_cache_offset", "attn.k_cache_offset"),
+            ("v_proj.kv_cache_scale", "attn.v_cache_scale"),
+            ("v_proj.kv_cache_offset", "attn.v_cache_offset"),
+        ]:
+            assert self._scale(
+                "C8", f"model.layers.0.self_attn.{suffix}"
+            ) == f"model.layers.0.self_attn.{dst}"
+
+    def test_other_types_or_names_return_none(self):
+        assert self._scale(
+            "", "model.layers.0.self_attn.k_proj.kv_cache_scale") is None
+        assert self._scale("C8", "model.layers.0.self_attn.q_proj.weight") is None
+
+
+class TestModelSlimInt2Selection:
+    """PR-21 wiring: is_int2_quant_layer gate + get_quant_method selection."""
+
+    def test_int2_layer_predicate(self):
+        from types import SimpleNamespace
+        from vllm_ascend.quantization import modelslim_config as msc
+        on = SimpleNamespace(enable_int2_quant=True, int2_quant_layers=[3])
+        assert msc.AscendModelSlimConfig.is_int2_quant_layer(
+            on, "model.layers.3.self_attn.q_proj")
+        assert not msc.AscendModelSlimConfig.is_int2_quant_layer(
+            on, "model.layers.4.self_attn.q_proj")
+        off = SimpleNamespace(enable_int2_quant=False, int2_quant_layers=[3])
+        assert not msc.AscendModelSlimConfig.is_int2_quant_layer(
+            off, "model.layers.3.self_attn.q_proj")
+
+    def test_get_quant_method_selects_int2_for_int2_layer(self):
+        from types import SimpleNamespace
+        from vllm_ascend.quantization import modelslim_config as msc
+        from vllm_ascend.quantization.methods.kv_int2 import (
+            AscendINT2KVCacheAttentionMethod,
+        )
+
+        class _FakeBase(torch.nn.Module):
+            pass
+
+        ns = SimpleNamespace(
+            quant_description={"kv_cache_type": "INT2"},
+            packed_modules_mapping={},
+            is_fa_quant_layer=lambda p: False,
+            is_indexer_quant_layer=lambda p: False,
+            is_c8_quant_layer=lambda p: False,
+            is_int2_quant_layer=lambda p: True,
+            quant_prefix_mapper=lambda mt, p: p,
+        )
+        fake_vllm_cfg = SimpleNamespace(model_config=SimpleNamespace(
+            hf_config=SimpleNamespace(model_type="ut_fake_model")))
+        with mock.patch.object(
+                msc, "get_current_vllm_config",
+                return_value=fake_vllm_cfg), \
+            mock.patch.object(msc, "LinearBase", type("_LB", (), {})), \
+            mock.patch.object(msc, "FusedMoE", type("_FM", (), {})), \
+            mock.patch.object(msc, "AttentionLayerBase", _FakeBase), \
+            mock.patch(
+                "vllm_ascend.quantization.method_adapters.AscendKVCacheMethod"
+            ) as fake_kv, \
+            mock.patch(
+                "vllm_ascend.quantization.methods.kv_int2."
+                "get_current_vllm_config",
+                return_value=SimpleNamespace(kv_transfer_config=None)):
+            got = msc.AscendModelSlimConfig.get_quant_method(
+                ns, _FakeBase(), "model.layers.3.self_attn")
+        fake_kv.assert_called_once()
+        assert isinstance(fake_kv.call_args.args[0],
+                          AscendINT2KVCacheAttentionMethod)
