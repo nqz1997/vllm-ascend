@@ -412,6 +412,22 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
     # the same as all zeros; dummy/profiling/capture batches do not fill it.
     replay_start: torch.Tensor | None = None
 
+    # R144 P0: stable per-request identity from vLLM InputBatch.req_ids
+    # (batch_idx -> req_id string). The req_id is assigned at request creation
+    # (SchedulerOutput.scheduled_new_reqs) and removed on finish/preempt
+    # (finished_req_ids / preempted_req_ids) -- explicit add/remove lifecycle,
+    # NOT a physical block address (which recycles on prefix-cache collision /
+    # block reuse). None on non-ascend paths and when R144_TT_REQID=0.
+    request_ids: list[str] | None = None
+
+    # R144 P0.1: EXPLICIT scheduler lifecycle events (stashed in _update_states,
+    # plumbed here). The resolver consumes these instead of inferring finish
+    # from batch absence (forbidden by contract: a request can be temporarily
+    # absent without being finished -> state must be preserved). None when OFF.
+    finished_req_ids: set[str] | None = None
+    preempted_req_ids: set[str] | None = None
+    new_req_ids: set[str] | None = None
+
     # TODO: Remove it when vLLM no longer uses this function.
     def unpadded(self, num_actual_tokens: int, num_actual_reqs: int) -> "AscendCommonAttentionMetadata":
         # This only use to eagle now. It will be use to enforce_eager in future.
@@ -445,6 +461,7 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
             seq_lens_cpu_upper_bound=self.seq_lens_cpu_upper_bound[:num_actual_reqs]
             if self.seq_lens_cpu_upper_bound is not None
             else None,
+            request_ids=_slice_reqs(self.request_ids),
             max_seq_len=self.max_seq_len,
             # Propagate parent-class fields so the unpadded view is a
             # faithful sub-batch of the original. Missing any of these
