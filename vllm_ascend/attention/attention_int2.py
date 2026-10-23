@@ -39,15 +39,11 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import AttentionSpec, CrossAttentionSpec
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
-from vllm_ascend.attention.context_parallel.common_cp import AscendMetadataForDecode, AscendMetadataForPrefill
-from vllm_ascend.attention.kvcomp_attn.attention_utils import (
-    get_kvcomp_decode_params,
-    is_enable_hamming_sparse,
-    reshape_and_cache_kvcomp,
-)
+# main moved the CP metadata dataclasses from common_cp into attention_cp
+# (release-line import adapted for the main port; unused here either way).
+# main dropped the release-line kvcomp feature; not re-exported here.
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
-    enable_cp,
     split_decodes_and_prefills,
     using_paged_attention,
 )
@@ -59,9 +55,7 @@ from vllm_ascend.compilation.acl_graph import (
     update_graph_params_workspaces,
 )
 from vllm_ascend.device.device_op import DeviceOperator
-from vllm_ascend.ops.flashcomm2_oshard_manager import flashcomm2_oshard_manager
 from vllm_ascend.utils import weak_ref_tensors
-from vllm_ascend.worker.kvcomp_utils import KVCompMetaData
 import os
 import logging
 
