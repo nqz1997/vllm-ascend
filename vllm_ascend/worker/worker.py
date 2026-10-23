@@ -197,6 +197,10 @@ class NPUWorker(WorkerBase):
 
         if self.cache_config.cache_dtype == "auto":
             self.cache_dtype = self.model_config.dtype
+        elif self.cache_config.cache_dtype == "int2_per_token_head":
+            # OSCAR True-INT2: packed 4xINT2 per byte. vLLM's dtype map only
+            # covers stock dtypes, so resolve the packed storage dtype here.
+            self.cache_dtype = torch.uint8
         else:
             self.cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[self.cache_config.cache_dtype]
 

@@ -21,6 +21,15 @@ from vllm_ascend.attention.int2.ctx import (  # noqa: F401
     logger,
 )
 
+# CANN toolkit root used by the runtime launcher compile. The release line
+# pinned /usr/local/Ascend/cann-9.0.0; upstream CI images ship a different
+# version, so follow the environment that set_env.sh exports instead.
+_CANN = (
+    os.environ.get("ASCEND_HOME_PATH")
+    or os.environ.get("ASCEND_TOOLKIT_HOME")
+    or "/usr/local/Ascend/cann-9.0.0"
+)
+
 
 
 
@@ -63,14 +72,14 @@ class Int2BridgeMixin:
             LSE_SRC = _opaths91.lse_bridge_src()
             TN = _os.path.dirname(_tn.__file__)
             INC = [_os.path.join(TN, "include"), _os.path.join(TN, "include", "third_party", "op-plugin"),
-                   "/usr/local/Ascend/cann-9.0.0/aarch64-linux/include",
-                   "/usr/local/Ascend/cann-9.0.0/include",
+                   _CANN + "/aarch64-linux/include",
+                   _CANN + "/include",
                    VENDOR + "/op_api/include"]
             LD = ["-L" + VENDOR + "/op_api/lib", "-lcust_opapi",
-                  "-L/usr/local/Ascend/cann-9.0.0/lib64", "-lascendcl",
+                  "-L" + _CANN + "/lib64", "-lascendcl",
                   "-L" + _os.path.join(TN, "lib"), "-ltorch_npu",
                   "-Wl,-rpath," + VENDOR + "/op_api/lib",
-                  "-Wl,-rpath,/usr/local/Ascend/cann-9.0.0/lib64"]
+                  "-Wl,-rpath," + _CANN + "/lib64"]
             type(self)._r91_mod = _ce.load(
                 name="int2_op_launch_lse_r108", sources=[LSE_SRC],
                 extra_include_paths=INC, extra_ldflags=LD, verbose=False)
@@ -115,14 +124,14 @@ class Int2BridgeMixin:
             from torch.utils import cpp_extension as _ce
             TN = _os.path.dirname(_tn.__file__)
             INC = [_os.path.join(TN, "include"), _os.path.join(TN, "include", "third_party", "op-plugin"),
-                   "/usr/local/Ascend/cann-9.0.0/aarch64-linux/include",
-                   "/usr/local/Ascend/cann-9.0.0/include",
+                   _CANN + "/aarch64-linux/include",
+                   _CANN + "/include",
                    VENDOR + "/op_api/include"]
             LD = ["-L" + VENDOR + "/op_api/lib", "-lcust_opapi",
-                  "-L/usr/local/Ascend/cann-9.0.0/lib64", "-lascendcl",
+                  "-L" + _CANN + "/lib64", "-lascendcl",
                   "-L" + _os.path.join(TN, "lib"), "-ltorch_npu",
                   "-Wl,-rpath," + VENDOR + "/op_api/lib",
-                  "-Wl,-rpath,/usr/local/Ascend/cann-9.0.0/lib64"]
+                  "-Wl,-rpath," + _CANN + "/lib64"]
             type(self)._r112_mod = _ce.load(
                 name=_opaths.launcher_name(),
                 sources=[_opaths.launcher_src()],
@@ -164,14 +173,14 @@ class Int2BridgeMixin:
             from torch.utils import cpp_extension as _ce
             TN = _os.path.dirname(_tn.__file__)
             INC = [_os.path.join(TN, "include"), _os.path.join(TN, "include", "third_party", "op-plugin"),
-                   "/usr/local/Ascend/cann-9.0.0/aarch64-linux/include",
-                   "/usr/local/Ascend/cann-9.0.0/include",
+                   _CANN + "/aarch64-linux/include",
+                   _CANN + "/include",
                    VENDOR + "/op_api/include", R135BASE + "/TASK_OWNED"]
             LD = ["-L" + VENDOR + "/op_api/lib", "-lcust_opapi",
-                  "-L/usr/local/Ascend/cann-9.0.0/lib64", "-lascendcl",
+                  "-L" + _CANN + "/lib64", "-lascendcl",
                   "-L" + _os.path.join(TN, "lib"), "-ltorch_npu",
                   "-Wl,-rpath," + VENDOR + "/op_api/lib",
-                  "-Wl,-rpath,/usr/local/Ascend/cann-9.0.0/lib64"]
+                  "-Wl,-rpath," + _CANN + "/lib64"]
             type(self)._r135_mod = _ce.load(
                 name="int2_lse_v1_r135", sources=[R135BASE + "/TASK_OWNED/int2_op_launch_lse_v1_r134.cpp"],
                 extra_include_paths=INC, extra_ldflags=LD, verbose=False)

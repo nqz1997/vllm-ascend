@@ -817,6 +817,11 @@ class AscendAttentionBackendImpl(AttentionImpl):
         # Note: Some embedding model weights are in float32 format.
         if self.kv_cache_dtype in [torch.float16, torch.bfloat16, torch.float32]:
             self.enable_c8_quant = False
+        elif self.vllm_config.cache_config.cache_dtype == "int2_per_token_head":
+            # OSCAR True-INT2 stores its own per-token-head scales in the page
+            # layout (prepared by the INT2 backend), so it does not require a
+            # recipe-derived quantized checkpoint like the C8 dtypes above.
+            self.enable_c8_quant = False
         else:
             from vllm_ascend.utils import is_c8_mxfp_kv_quant
 
@@ -1595,8 +1600,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     layer, query, key, value, kv_cache, attn_metadata, output
                 )
 
-        if self.enable_hamming_sparse:
-            self.layerIndex = int(layer.layer_name.split(".")[2])
+        # release-line kvcomp/hamming-sparse feature: main has neither the
+        # feature module nor the attribute, so this branch is not ported.
 
         if output_scale is not None or output_block_scale is not None:
             raise NotImplementedError("fused output quantization is not yet supported for AscendAttentionBackendImpl")
