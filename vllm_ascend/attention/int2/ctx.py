@@ -41,15 +41,17 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import AttentionSpec, CrossAttentionSpec
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
-from vllm_ascend.attention.context_parallel.common_cp import AscendMetadataForDecode, AscendMetadataForPrefill
-from vllm_ascend.attention.kvcomp_attn.attention_utils import (
-    get_kvcomp_decode_params,
-    is_enable_hamming_sparse,
-    reshape_and_cache_kvcomp,
+# main moved the CP metadata dataclasses from common_cp into attention_cp;
+# the release-line tree imports them from common_cp. This is the main-port
+# adaptation only (no behaviour change).
+from vllm_ascend.attention.context_parallel.attention_cp import (
+    AscendMetadataForDecode,
+    AscendMetadataForPrefill,
 )
+# main dropped the release-line kvcomp feature (vllm_ascend.attention.kvcomp_attn
+# and worker.kvcomp_utils do not exist there), so the hub does not re-export it.
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
-    enable_cp,
     split_decodes_and_prefills,
     using_paged_attention,
 )
@@ -61,9 +63,9 @@ from vllm_ascend.compilation.acl_graph import (
     update_graph_params_workspaces,
 )
 from vllm_ascend.device.device_op import DeviceOperator
-from vllm_ascend.ops.flashcomm2_oshard_manager import flashcomm2_oshard_manager
+# main has no flashcomm2_oshard_manager (release-line FlashComm2 O-Shard is
+# not part of the main port); the hub does not re-export it.
 from vllm_ascend.utils import weak_ref_tensors
-from vllm_ascend.worker.kvcomp_utils import KVCompMetaData
 
 # ---- shared module state from the base attention module ----
 from vllm_ascend.oscar.diag import (  # noqa: F401
@@ -103,14 +105,13 @@ __all__ = [
     "AttentionBackend", "AttentionCGSupport", "AttentionImpl",
     "AttentionLayer", "AttentionMaskBuilder", "AttentionMetadataBuilder",
     "AttentionType", "AttentionBackendEnum", "CrossAttentionSpec",
-    "DeviceOperator", "KVCompMetaData", "SchedulerOutput", "SWA_INT_MAX",
-    "VllmConfig", "AttentionSpec", "cdiv", "dataclass", "enable_cp",
-    "envs_vllm", "flashcomm2_oshard_manager", "get_current_vllm_config",
+    "DeviceOperator", "SchedulerOutput", "SWA_INT_MAX",
+    "VllmConfig", "AttentionSpec", "cdiv", "dataclass",
+    "envs_vllm", "get_current_vllm_config",
     "get_draft_graph_params", "get_draft_graph_prefill_params",
-    "get_graph_params", "get_kvcomp_decode_params",
+    "get_graph_params",
     "get_tensor_model_parallel_rank", "get_tensor_model_parallel_world_size",
-    "is_enable_hamming_sparse", "logger", "register_backend",
-    "reshape_and_cache_kvcomp", "split_decodes_and_prefills",
+    "logger", "register_backend", "split_decodes_and_prefills",
     "update_draft_graph_params_workspaces", "update_graph_params_workspaces",
     "using_paged_attention", "weak_ref_tensors", "Enum", "torch", "torch_npu",
 ]
