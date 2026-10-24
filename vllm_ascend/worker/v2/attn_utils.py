@@ -197,6 +197,39 @@ def _align_hybrid_attention_page_sizes(kv_cache_specs: dict[str, KVCacheSpec]) -
             )
 
 
+def _pack_int2_full_attention_spec(
+    spec: KVCacheSpec, vllm_config: VllmConfig
+) -> KVCacheSpec:
+    """Publish the physically-packed INT2 page before the engine sizes the pool.
+
+    ``Attention.get_kv_cache_spec`` describes dense K/V, but OSCAR INT2 packs
+    four 2-bit values per byte and keeps four bf16 scale/offset lanes per
+    token-head cell next to the payload. Reporting the dense byte count makes
+    the engine reserve ~3.6x the memory the backend actually allocates.
+    """
+    if (
+        vllm_config.cache_config.cache_dtype != "int2_per_token_head"
+        or type(spec) is not FullAttentionSpec
+    ):
+        return spec
+    head_size = int(spec.head_size)
+    head_size_v = int(spec.head_size_v or head_size)
+    if head_size % 4 or head_size_v % 4:
+        # Fail closed: the backend packs four 2-bit lanes per byte; head
+        # sizes that do not divide must keep the dense spec.
+        logger.warning(
+            "int2: head sizes (%d, %d) are not 4-byte divisible; "
+            "keeping the dense KV spec",
+            head_size,
+            head_size_v,
+        )
+        return spec
+    content = (head_size + head_size_v) // 4 + 4 * get_dtype_size(
+        vllm_config.model_config.dtype
+    )
+    return replace(spec, state_content_bytes=content)
+
+
 def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     """Build Ascend-specific KV cache specs for v2 worker patching."""
     from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
@@ -231,6 +264,7 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
         spec = attn_module.get_kv_cache_spec(vllm_config)
         if spec is None:
             continue
+        spec = _pack_int2_full_attention_spec(spec, vllm_config)
 
         if isinstance(spec, MambaSpec):
             # Keep Mamba groups after attention groups. Ascend graph parameter
