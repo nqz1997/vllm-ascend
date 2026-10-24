@@ -14,8 +14,8 @@
 
 ## 0. 本轮产物与一句话结论
 
-- 证据分支（独立 orphan，不含源码）：`nqz1997/vllm-ascend` @ `r218-evidence/20261024`，
-  commit `13d36345876bf65a3329c6899f8494129652810b`；远端重下核验通过（见 §7）。
+- 证据分支（独立 orphan，不含源码）：`nqz1997/vllm-ascend` @ `r218-evidence/20261024`
+  （HEAD 见分支页）；远端重下/API 核验通过（见 §7）。
 - 新表：`figs/PERF_ATTRIBUTION_ADDENDUM_20261024.csv`（44 行）、`figs/PERF_STEP_STATS_20261024.csv`
   （4 行），生成器 `r218_addendum_tables.py`（只读 `runs/`、`figs/`、`opbench_delivered.json`）。
 - 新包：`evidence_pack/r218_perf_attribution_20261024r2.tar.gz`（109 文件，本页与两张 CSV 在内；
