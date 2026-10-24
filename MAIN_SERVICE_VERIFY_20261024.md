@@ -141,7 +141,7 @@ serve 日志：容器 `r218-main-verify:/tmp/serve_<tag>.log`。
   首个分歧张量＝**HP 环 bf16 行（recent 窗）**：坏 rep 首个 decode step 环行即与 blocking 分歧，
   此刻 `key_rot/value_rot`（环写输入值）、q、INT2 中层页、中层算子输出**全部逐字节相同**；
   张量级形态＝环 recent 窗 [128,1024) **NaN 污染**、每代恒增 1,310,720 元素（跨代残留）；
-  INT2 写侧（src_k/src_v/src_ks）12 rep 全程与 blocking 一致——「存进去就错」被否定。
+  INT2 写侧 src_k/src_v/src_ks 12 rep 全程哈希与 blocking 一致（量化输入观测；⚠不能据此排除存储写越界/内存副作用——写入者审计进行中）。
   写→读同步（9/12）、HP 环写生命周期（8/12）排除仍成立；环写机制候选
   `R166_STREAMFIX=ring`（12/12）、`R164_EAGER_SLIDE`（9/12）不治。
 - blocking 0/12 只支持"时序相关"，**不据此归因 CANN**；未取得可合入最小修复前，

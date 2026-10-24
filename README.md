@@ -88,8 +88,9 @@ cd r5/r218_perf_attr_20261024r5 && sha256sum -c SHA256SUMS    # 包内 156 项
 
 ## 6. 第 4 波增量（2026-10-24 晚）
 
-- **P6 main 异步定位证据**：`r218_p6_async_evidence_20261024.tar.gz`（31MB，
-  sha256 `97a1c5ec328c7756ecbfeb40b9a525bf62ded0be05002a51ed9eacac54e555e2`）＝
+- **P6 main 异步定位证据**：`r218_p6_async_evidence_20261024.tar.gz`（28MB，
+  sha256 `70457e17abc0d6a670d8d0fdb8096e9a9cef5b6105c7bf9c4f6e4bf6a1ffe373`；
+  v2＝README 表述边界修正，旧 sha `97a1c5ec…` 作废）＝
   关键张量子集（8 个环行 .pt：NaN 增长序列 r00→r05 多层）＋async/blocking 哈希流 jsonl＋
   最小复现三件套（async_diag.sh/p6_compare.py/x1080x1_req.json）＋每腿 analysis 权威判据＋
   **全量 141 文件 SHA256SUMS**（全量 445MB 原件在交付盘
