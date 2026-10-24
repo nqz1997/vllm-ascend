@@ -10,7 +10,8 @@
 > 本页是 `R218_PERF_ATTRIBUTION_20261023.md` 的**补充**，不重写主文、不改动已有数值。新增内容只有：
 > ① 证据包上 GitHub 的取回与校验；② 用**已有** `perq.json`/`serve.log` 做的步级二次分析；
 > ③ 按报告需要的类别时间分解（已证实/推测/未知三档）；④ 版本映射。
-> **没有跑新的 NPU 腿**（原因见 §5），因此没有任何新的端到端测量值被引入。
+> r2 轮**没有跑新的 NPU 腿**（原因见 §5）；**2026-10-24 晚 sub-B 轮补采了 2 条
+> profiling 腿（§10，只覆盖 2K/C32 decode 稳态步）**，其数字一律标注为新增、单独分列。
 
 ---
 
@@ -23,12 +24,12 @@
 - 新包：`evidence_pack/r218_perf_attribution_20261024r2.tar.gz`（109 文件，本页与两张 CSV 在内；
   摘要见包旁 `.sha256` 与证据分支 `README.md`，本页不自引用包摘要）。
 - **一句话**：2K/C32 的 38.89 s 总差里，已测门控按面值至多覆盖 3.80 s（≤9.8%），
-  即 **≥35.10 s（≥90.2%）仍未被覆盖**；本轮把这一步细化到**每个 decode 步 483.9 ms**，
-  并证明其中 **~470.5 ms/步在跳过中段算子执行之后仍然存在**。多出的时间随 **C×ctx** 线性增长
-  （**7.396 / 7.445 µs 每 KV token 每步**，两点吻合 0.7%），折算约 **2.5 GB/s/层**——
-  这是**逐 token 串行处理链**的签名，不是带宽上限，也不是自定义核的算术成本。
-  现有数据**不能**把它切到具体环节；候选仍是读侧载体 gather/dequant、写侧打包、host 编排三者，
-  且互斥拆分需要算子级 trace（本轮受阻，见 §5）。
+  即 **35.10 s（90.2%）未被任何已测门控覆盖（差分观察，非下界）**；本轮把这一步细化到
+  **每个 decode 步 483.9 ms**，并证明其中 **~470.5 ms/步在跳过中段算子执行之后仍然存在**。
+  两个工作点的多余时间归一化后均为 **7.396 / 7.445 µs 每 KV token 每步**（吻合 0.7%），
+  与 ∝C×ctx **兼容**——但两点不足以证线性标度律，**撤回**原先
+  “逐 token 串行处理链签名 / ≈2.5 GB/s 每层带宽”的机制性宣称（见 §1.2 更正）。
+  **2026-10-24 晚间（§10）已补采算子级 trace**：2K 的每步构成首次获得直接测量。
 
 ---
 
@@ -41,8 +42,11 @@
 | 2K/C32 | 49,309.9 ms（3 腿中位） | 10,415.3 ms（2 腿） | **38,894.6 ms** | 8,411.3 ms（21.6%） | **30,483.3 ms**（78.4%） | **4.73×** |
 | 16K/C8 | 113,493.1 ms（2 腿） | 19,399.8 ms（2 腿） | **94,093.3 ms** | 32,554.6 ms（34.6%） | **61,538.7 ms**（65.4%） | **5.85×** |
 
-`wall = prefill+排队 + decode span`，两段不相交、可相加；decode span = 每请求 first→last
-（64 输出 token = 63 个间隔）。**2K 首条单跑腿 104.39 s（prefill 离群）保留并标 SUPERSEDED**，
+`wall = prefill+排队 + decode span`，decode span = 每请求 first→last
+（64 输出 token = 63 个间隔）。**口径更正（2026-10-24 晚）**：`batch wall − 逐请求 decode
+span 中位数`得到的"prefill+排队"只是**统计代理量**；在 chunked prefill 与 decode 重叠的
+调度下（见 §2.1），两段并非不相交的真实阶段拆分，逐项相加不构成严格的阶段分解。
+表中数值照旧，仅解释降级。**2K 首条单跑腿 104.39 s（prefill 离群）保留并标 SUPERSEDED**，
 本页一律用 3 腿中位 49.31 s；不因复跑更快而作废首次观测。
 
 ### 1.2 步级标度律（本页的定量支点）
@@ -54,19 +58,24 @@
 
 \* `n_in + C×31.5`（prompt + 生成中段），与主文 §4b 一致。
 \*\* 每 KV token 按 512 B（2×8 kv head×128 dim×2 bit）计；`512 B ÷ (每层每 token µs)`。
-两点每 token 差 0.7%，而每步 KV token 数差 2.005×（名义 2.000×）——
-**同一条标度律**。2.5 GB/s 比 910B3 HBM 流带宽低约 2–3 个数量级，
-因此这不是“读 INT2 KV 太占带宽”，而是**逐 token 的固定处理开销**。
+**解释降级（2026-10-24 晚，撤回机制性宣称）**：两个工作点归一化后每 token 差 0.7%
+只证明**两点与 ∝C×ctx 兼容**；仅凭两个工作点不足以确立线性标度律，
+也**不构成**“逐 token 串行处理链签名”或“≈2.5 GB/s 每层带宽”这类机制结论——
+2.5 GB/s 只是该假设下的折算量，不是实测带宽，也不是处理模式证据。
+“不是读带宽受限”的旧推断同样依赖该机制假设，一并降级为**待证**。
+（后续 §10 的算子级 trace 对 2K 的每步构成给出了直接测量，可作对照。）
 
 ### 1.3 现有门控的覆盖（不改主文数字）
 
-| 点 | 已测门控按面值可覆盖 | 未被覆盖（下界） | 其中 decode | 其中 prefill+排队 |
+| 点 | 已测门控按面值可覆盖 | 未被任何已测门控覆盖（差分观察） | 其中 decode | 其中 prefill+排队 |
 |---|---:|---:|---:|---:|
 | 2K/C32 | ≤3.80 s（≤9.8% 总差；整腿代数和 3.13 s / 8.0%） | **35,098 ms（90.2%）** | 28,221 ms（**447.95 ms/步**） | 6,877 ms |
 | 16K/C8 | NOMIDE 52.96 s + NOSLIDE2 0.49 s = 53.45 s（至多 56.8%） | **40,644 ms（43.2%）** | 16,715.5 ms（**265.33 ms/步**） | 23,928.7 ms |
 
-**这不是互斥账本。** 门控在同一步内可重叠，重叠量未测；上表是“按面值扣除后仍未覆盖”的
-**下界**，若重叠则更大。不追求 100%，也不把未覆盖部分归为硬件下限。
+**这不是互斥账本。** 门控在同一步内可重叠，重叠量未测；**措辞更正（2026-10-24 晚）**：
+非加性消融的按面值扣除之和不构成严格下界，上表“未被覆盖”列应读作
+**“未被任何已测门控覆盖的差分观察”**，而非“至少这么大”的下界证明。
+不追求 100%，也不把未覆盖部分归为硬件下限。
 
 ### 1.4 一个决定性的新观察（只用已有 perq 数据）
 
@@ -181,14 +190,17 @@ prefill 与 decode **同步变差**是重要约束：它把可疑面从“decode
 
 ### 4.1 已证实（直接测量，可复现）
 
-1. 两点总差与墙钟拆分：38,894.6 ms / 94,093.3 ms；decode 占 78.4% / 65.4%。
-2. **步级标度律：7.396 与 7.445 µs 每 KV token 每步**（两点差 0.7%），
-   折合每层 **~0.205 µs**、**~2.5 GB/s** 的有效处理率。
+1. 两点总差与墙钟拆分：38,894.6 ms / 94,093.3 ms；decode 占 78.4% / 65.4%
+   （span 口径为统计代理量，见 §1.1 更正）。
+2. **两工作点每 KV token 每步差 7.396 与 7.445 µs（差 0.7%）**：这是两点实测量的
+   归一化一致性，**不是已证实的标度律**；“每层 ~0.205 µs / ~2.5 GB/s”仅为该假设下的
+   折算量（机制宣称已撤回，见 §1.2）。
 3. **NOMIDE 差分**：2K 24.25 ms/步（墙钟，3.9%）、16K 840.68 ms/步（墙钟，56.3%）。
 4. **NOMIDE 后剩余步差**：2K **470.51 ms/步**（97.2% 原点步差）、16K **266.58 ms/步**。
 5. slide2：2K 28.90 ms/步（4.7%）、16K 7.72 ms/步（0.5%）；SR stage 2K 3.27 ms/步（0.5%）；
    G stage 换路更慢（−6.66 ms/步）。
-6. 未覆盖下界：2K **≥35,098 ms（90.2%）**、16K **≥40,644 ms（43.2%）**。
+6. 未被任何已测门控覆盖的差分观察：2K **35,098 ms（90.2%）**、16K **40,644 ms（43.2%）**
+   （非加性消融之和不构成严格下界，见 §1.3 更正）。
 7. 生成期额外 **~10.5 GiB** 工作区（HBM 93% vs 77%），只在 decode 平台期出现。
 8. 批内首 token 跨度与 span 分布（§2），证明 decode 与 chunked prefill 重叠。
 9. 直调微基准：attention 0.456/0.466 ms、quant 0.894/0.876 ms（sync-per-call）。
@@ -201,7 +213,8 @@ prefill 与 decode **同步变差**是重要约束：它把可疑面从“decode
    13.35 ms/步，说明**并非全部算子设备时间都落在步的关键路径上**（或直调含同步开销、
    高估了设备时间）。两者不可直接相加。
 3. **读侧载体 gather/dequant 是 2K 残差的首选候选**：它 ∝C×ctx、在 NOMIDE 早退点之前、
-   与 2.5 GB/s 的串行处理率一致；但本批**没有能单独删除它的门控**，故只是候选。
+   与两点归一化一致性兼容（原“与 2.5 GB/s 串行处理率一致”的表述依赖已撤回的机制宣称）；
+   但本批**没有能单独删除它的门控**，故只是候选（§10 的 trace 对此有新证据）。
 4. host 逐层编排若为纯常数，应与 ctx 无关；实测强烈依赖 C×ctx，除非 host 成本正比于
    分块数/循环迭代数，否则不是主项。
 
@@ -222,7 +235,82 @@ prefill 与 decode **同步变差**是重要约束：它把可疑面从“decode
 
 ---
 
-## 5. 为什么本轮没有新增 profiling（设备与边界）
+## 10. 2026-10-24 晚间补充（sub-B profiling 腿）：2K/C32 decode 步的算子级构成
+
+> 本节为**新增测量**，与前文既有数字分列：前文所有数值一律未改。本节只覆盖
+> **2K/C32 一个工作点**的 decode 稳态步，不外推 16K。
+
+### 10.1 协议与身份（bg6 两条腿）
+
+- 腿：`runs/bg6_prof_int2_2k_c32`（mode B）与 `runs/bg6_prof_bf16_2k_c32`（mode N），
+  由 `profiling_20261024/r218rp_prof_leg.sh` 驱动——与冻结 `r218rp_leg.sh` thrcap 腿
+  **同包络同参数**（NS=32、ctx=2048、GMU=0.75、MNBT env=0→引擎缺省 8192、points="32"、
+  eager、ASCEND_LAUNCH_BLOCKING=0 异步）。
+- 唯一增量（profiling 腿专用，不回写交付资产）：① `R118_SC` 指向
+  `profiling_20261024/sitecustomize_r218prof`（链式加载原 R137→R114 sitecustomize，
+  另装 profiler 钩子）；② CAN 用副本 `r218_report_eval_prof.py`
+  （=冻结 `r218_report_eval.py` +31 行幂等注入，见 `profiling_20261024/CAN_DIFF.txt`）。
+  **overlay 文件零改动**。
+- 身份门全绿：`[R218ID] attention_v1 sha 85051bbd2e74c117`（ov_restore）、内核
+  `md5=c8a8d47a63be7ad7`、KV 池 1,719,424 / 214,912 tok、`Running: 32 reqs`、
+  `enforce_eager=True`、两腿命中 32/32。
+- 采样：`torch_npu.profiler`（activities=CPU+NPU）包住
+  `vllm_ascend NPUModelRunner.execute_model`，**门控在纯 decode 步**
+  （`total_num_scheduled_tokens==32`，排除一切 chunked-prefill 混排步），
+  warm 10/6 步后采 **12 步**（INT2 步 n=20..31、BF16 n=16..27，EngineCore
+  pid 5724/6692，钩子生命周期见各腿 `prof_steps.jsonl`）。
+- **探针开销（同腿前后对照，n=43 个未采样步 vs n=12 个采样步中位）**：
+  INT2 **+197.67 ms/步**（764.72 vs 567.05；+34.9%）、BF16 **+21.24 ms/步**
+  （110.98 vs 89.74；+23.7%）。采样腿的 batch wall 含约 60 s 的 trace 导出停顿
+  （INT2 111.4 s / BF16 37.8 s），**不可作吞吐口径**；吞吐仍以冻结腿为准。
+
+### 10.2 decode 稳态步构成（探针关，n=43 步中位；kernel union 为全流区间并集）
+
+| 量 | INT2 | BF16 | 差（INT2−BF16） |
+|---|---:|---:|---:|
+| 纯 decode 步墙钟（中位） | **567.05 ms** | **89.74 ms** | **477.31 ms** |
+| NPU kernel 时间（并集/12 步） | **266.39 ms** | **28.95 ms** | **237.44 ms** |
+| host/发射间隙（墙钟−kernel 并集） | **300.66 ms** | **60.79 ms** | **239.87 ms** |
+| 图：`figs/PERF_PROFILING_STEP_20261024.png`；逐 op：`figs/PERF_PROFILING_20261024.csv` | | | |
+
+两个模式在 eager 下都**同时**有可观的 kernel 时间与 host 间隙；2K 的步差
+（纯 decode 口径 477.31 ms）**近似对半**来自 Δkernel（+237.4）与 Δhost 间隙（+239.9）。
+注意：纯 decode 步墙钟（567/89.7 ms）与前文 span 口径步时（603/119 ms）不同——
+span 口径含 chunked-prefill 混排步，两者分列、不可互换。
+
+### 10.3 kernel 级分解（每步，12 步合计/N；NPU kernel 总时间占比）
+
+| op（trace 直接命名） | INT2 ms/步（占 kernel） | BF16 ms/步（占 kernel） | 备注 |
+|---|---:|---:|---|
+| **OscarInt2FusedAttnInt2Lse**（冻结中层核） | **209.25（78.3%）** | — | 432 次=12 步×36 层；**单次 5.81 ms** |
+| FusedInferAttentionScore（非中层注意力路径，疑 S+R 档） | 5.09（1.9%） | **12.64（43.7%）** | BF16 的主注意力核 |
+| aclnnMatmul…MatMulV2 | 19.66（7.4%） | 13.31（46.0%） | INT2 调用数为 BF16 的 2.00×（3468 vs 1740），未查因 |
+| aclnnCat…ConcatD | 11.77（4.4%） | —（BF16 无此项进前 10） | |
+| aclnnMuls…Muls | 7.55（2.8%） | — | |
+| 其余（RmsNorm/SwiGlu/rope/拷贝类/未映射，逐 op 见 CSV） | ~13（~4.9%） | ~3.0（~10%） | 名称→类别的映射为启发式，逐 op 保留原名 |
+
+**读法（非加性提醒）**：kernel 并集 + host 间隙按构造 = 步墙钟（同一步内互补）；
+kernel 内部各类为**命名求和**，多流重叠在本腿可忽略（并集 266.39 ≈ 求和 267.11）。
+
+### 10.4 对 §3/§4 悬案的直接回答与新增未知
+
+1. **§4.3.2 的“直调 vs 服务内数量级矛盾”在 2K 定量闭合**：服务内单次 5.81 ms vs
+   直调微基准 0.456 ms（**12.7×**）。差距本身已实测，但**成因未查**（block table 布局/
+   tiling/批形状差异，仍是未知）。
+2. **NOMIDE 只省 13 ms/步的原因**：2K 步是 host 间隙主导（300.7/567.1=53%），删掉
+   209 ms 的中层 kernel 大部分被 host 时间**遮蔽**（墙钟只降 13.35 ms）；16K 时 kernel
+   时间超过 host 时间，NOMIDE 才显出 710 ms/步。即“NOMIDE 后剩余 470.5 ms/步”中
+   约一半是**未被遮挡的 kernel 时间**（≈209 ms 中层核 + 其他 kernel 差）、约一半是
+   host 间隙差。**§4.2.4“host 编排应与 ctx 无关”的推断被证伪**：host 间隙本身
+   INT2 300.7 ms vs BF16 60.8 ms（同 ctx 同 batch），差 239.9 ms。
+3. **仍未知**：① host 间隙 300.7 ms 的内部构成（Python/发射/同步等待，cpu_op 事件
+   嵌套不可加，未作分解）；② 非 Oscar kernel 的类别归属（拷贝类 vs 计算 vs 未映射）
+   只有启发式命名映射；③ INT2 每层多出的 matmul 调用（×2）来源；④ 16K 未采 trace，
+   本节不外推。
+
+---
+
+## 5. 为什么 r2 轮没有新增 profiling（设备与边界）——**已于同日晚间由 sub-B 轮补采（见 §10）**
 
 协议要求：任何 NPU 使用须 `flock /tmp/r218_npu7.lock`，**锁内先核实 NPU 7 空闲**，
 且 profiling 不得与 A 线并行。2026-10-24 检查时：
@@ -319,7 +407,8 @@ cd r218_pack/r218_perf_attr_20261024 && sha256sum -c SHA256SUMS         # -> 103
 
 | 包版本 | 代码身份 | 运行时 / 姿态 | 证据文件 | 适用口径 |
 |---|---|---|---|---|
-| **20261024r3**（本页包含在该包中） | 同下 | 同下 | 20261024r2 全部 ＋ main 异步定位更正（`MAIN_SERVICE_VERIFY` §6、本页版本边界） | 交付树；main 不适用 |
+| **20261024r5**（本页 §10 所在包） | 交付树 v4 PR-22 tip `983fbac1` 同下；**profiling 增量不触 overlay**：`R118_SC`→`profiling_20261024/sitecustomize_r218prof`（链 R137→R114＋钩子）＋ CAN 副本 `r218_report_eval_prof.py`（冻结 CAN＋31 行幂等注入） | `oscar-r103-runner`、NPU 7（flock 全程，窗口 12:31–13:15 UTC）、其余同冻结腿；**采样**：纯 decode 步（tot==32）warm 10/6 后 12 步（INT2 n=20..31/BF16 n=16..27）；**探针开销 +197.67/+21.24 ms/步**；ASCEND_LAUNCH_BLOCKING=0 | `runs/bg6_prof_{int2,bf16}_2k_c32/`（trace 原件 229/18 MB、`prof_steps.jsonl`、gates、serve.log）、`figs/PERF_PROFILING_20261024.csv`、`figs/PERF_PROFILING_STEP_20261024.png`、`profiling_20261024/`（脚本+分析+smoke） | **仅** 2K/C32 decode 稳态步构成；不作吞吐、不外推 16K；采样腿 batch wall 含导出停顿不可用 |
+| **20261024r3**（本页 §1–§9 在该包中） | 同下 | 同下 | 20261024r2 全部 ＋ main 异步定位更正（`MAIN_SERVICE_VERIFY` §6、本页版本边界） | 交付树；main 不适用 |
 | **20261024** | 交付树 v4 PR-22 tip `983fbac1`（≡ `ov_restore`）；attn `85051bbd2e74c117`；kernel md5 `c8a8d47a63be7ad7`；launcher r152 | `oscar-r103-runner`，CANN 9.0.0 / vLLM 0.22.1，Qwen3-8B，dev7；**eager**；block 128、MNBT 8192、greedy、64 tok | 四腿＋复跑、2K/16K 消融、账本 v2、吞吐对照、一页结论、main 验证记录 | 交付树精度/吞吐/容量/归因 |
 | 20261023（SUPERSEDED） | 同上 | 同上 | 同上（缺 `MAIN_SERVICE_VERIFY_20261024.md`） | 同上 |
 | **main 移植（单列，OPEN）** | `nqz1997/vllm-ascend` `oscar-int2/m-port-full-ut` @ `81295d899`（main 基 `dde85f6b8`）；attn `704cf4e0c3a7fa5a`；同一冻结 kernel md5 | 上游 nightly `nightly-ci-main-a2-openeuler`（digest `8eaf0b4f…`），CANN 9.2.0 / torch 2.10.0+cpu / torch_npu 2.10.0.post7 / vLLM 0.31.0 @ `db9527a4`；NPU 7 | `MAIN_SERVICE_VERIFY_20261024.md`；补丁 `main_port_runtime_fixes.patch` sha256 `c227321d…` | **仅**构建/import/BF16 冒烟/隔离 UT 135 passed（适配后）＋串行化发射 41/41；默认异步 18/24 损坏，最小复现 B=1 1080 tok 5/12 vs blocking 0/12，定位 INT2 中层读路径、**OPEN**；不标生产可用，不引用交付树数字 |
@@ -331,6 +420,15 @@ cd r218_pack/r218_perf_attr_20261024 && sha256sum -c SHA256SUMS         # -> 103
 | 文件 | 内容 |
 |---|---|
 | `PERF_ATTRIBUTION_ADDENDUM_20261024.md` | 本页 |
+| `figs/PERF_PROFILING_20261024.csv` | 78 行 op 级分解（step/category/op 三层，含证据来源列；§10） |
+| `figs/PERF_PROFILING_STEP_20261024.png` | INT2 vs BF16 纯 decode 步构成堆叠图（§10.2） |
+| `profiling_20261024/r218rp_prof_leg.sh` | profiling 腿驱动（冻结腿同包络＋R118_SC/CAN 副本注入） |
+| `profiling_20261024/r218_report_eval_prof.py`＋`CAN_DIFF.txt` | CAN 副本与冻结 CAN 的逐行 diff |
+| `profiling_20261024/sitecustomize_r218prof/{sitecustomize.py,r218prof_hook.py,r218prof_cfg.json}` | 钩子（spawn/fork 双路径、幂等、cfg 门控） |
+| `profiling_20261024/analyze_prof_trace.py`、`profiling_20261024/make_prof_outputs.py` | trace→CSV/图（只读 trace 与 steplog） |
+| `profiling_20261024/smoke_out/` | torch_npu.profiler 冒烟（12:31，设备 7） |
+| `runs/bg6_prof_{int2,bf16}_2k_c32/prof.trace.json` | chrome trace 原件（228,858,963 / 18,136,135 B） |
+| `runs/bg6_prof_{int2,bf16}_2k_c32/prof_steps.jsonl` | 钩子生命周期＋逐步墙钟（含探针前后对照） |
 | `figs/PERF_ATTRIBUTION_ADDENDUM_20261024.csv` | 44 行分解表：value/unit/per-step/share/basis/confidence/source |
 | `figs/PERF_STEP_STATS_20261024.csv` | 逐点 span 分布、池化步时、批内首 token 跨度、引擎样本 |
 | `r218_addendum_tables.py` | 生成器（只读已有腿；含对已发布账本的 6 条断言） |

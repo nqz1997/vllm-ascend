@@ -1,0 +1,369 @@
+# R218 子 Agent A 交付：PR 推进 / main 集成 / 异步定位 / 容量对账
+
+日期：2026-10-24（会话日）
+角色：子 Agent A（PR 推进与 main 集成）
+基线：`m-port-full-ut` @ `18d56c698` + 测试适配 `81295d899`（main 0.31 / vllm-ascend main 线）
+设备：仅 NPU 7（`flock /tmp/r218_npu7.lock` 内使用；每次 leg 结束已停服释放）
+
+---
+
+## 0. 结论速览
+
+| 项 | 结论 |
+|---|---|
+| 05–22 UT | **全部在真实 import 闭包基座上全绿**（17/17 单元；06 的 4 条包级审计测试已按语义归位到装配单元 19，06 基座现 16/16 全绿，见 §1.2 注①） |
+| 上游依赖评审方式 | 仓库 CONTRIBUTING/docs/PR 模板**没有** stacked-PR 或"依赖 PR"机制；`main2main` 只是 CI 标签。→ **05+ 不开上游 PR**，只准备 fork 分支并标 blocked |
+| fork 产物 | `oscar-int2/m-port-full-ut` @ `81295d899` + 17 个 `oscar-int2/prep-unit-NN` 预览分支 + 1 个 blocked 标签（§1.3） |
+| 六项修复归属 | 2 项 main-only、4 项 upstream-general；**四个已提交 PR（01–04）都不需要改**（§2） |
+| 默认异步故障 | **定位进 INT2 中层（three-tier middle）读路径**；最小复现 = 单请求 1080 token，async 5/12 坏 vs blocking 0/12；**未找到可合入的最小修复 → OPEN**（§3） |
+| 2.00× 容量 | 真因 = KV spec 用 `head_size`（未用 packed `head_size//4`）记账 = 每 token 每层 2048 B，物理 576 B；现池仅用掉 10.58/21.04 GiB。**独立分支已设备验证**：池 306,432 → **849,280 tok（2.77×；对 BF16 5.54×）**，HP 环 4.64 GiB 预留，blocking 电池 41/41（§4、`MAIN_SERVICE_VERIFY` §7）；产品结论仍 OPEN（未合入/未正式姿态复跑） |
+| 立场 | **OPEN**；不以 blocking 回归替代正式模式验收；不称 main 可生产（§5） |
+
+---
+
+## 1. 任务 1 — 05..22 推进
+
+### 1.1 方法（可复算）
+
+- 预览树：`/tmp/r218_mpf_ut_3270309`（工作树，分支 `prep-depgrp-05-06`）。
+- UT 基座构造：从 main-port 链根 `dde85f6b8` 起，按**主链历史顺序** cherry-pick 该单元的**最小 import 闭包（含单元自身）**，再叠加两处 main 适配提交：
+  - `90340bb70` = `int2/ctx.py` 的 vLLM 0.31 main 导入适配（`common_cp→attention_cp`，删除 kvcomp/flashcomm2/enable_cp 再导出）；
+  - `268b8ff16` = `attention_int2.py` 的 main 导入适配（19–22 单元需要）。
+- 运行：`PYTHONPATH=/tmp/r218_ut_bases /home/n00928095/R218_UPSTREAM_WORK/venv_main/bin/python -m pytest --noconftest -q tests/ut/oscar`
+  （`--noconftest`：main 的仓库级 conftest 依赖 vLLM core 测试夹具，本树不可用；不影响 oscar UT 语义。）
+- 驱动脚本：`/home/n00928095/R218_UPSTREAM_WORK/verify_scripts/ut_matrix2.sh`、`ut_fixup3.sh`；**2026-10-24 二轮重排后以 `ut_matrix3.sh` 为准**（审计测试归位 19 + 21/22 测试适配进分支本体），原始日志 `ut_matrix3_20261024.{log,tsv}`
+- 原始日志：`verify_scripts/ut_matrix2_20261024.{log,tsv}`、`ut_matrix1_20261024.{log,tsv}`、`ut_fixup3_20261024.log`
+
+> 首版矩阵（`ut_matrix.sh`）有缺陷：基座只含依赖单元、**漏掉了被测单元自身**，测的是"依赖基座"而非单元。已用 `ut_matrix2.sh` 修正并全量重跑；下表全部来自修正版。
+
+### 1.2 依赖表 + UT 结果（05..22）
+
+| 单元 | 真实 import 闭包（最小基座，含自身） | UT（tests/ut/oscar 全量） | 状态 |
+|---|---|---|---|
+| 05 | 01 03 05 | 37 passed | PASS |
+| 06 | 01 06 | **16 passed** | PASS（注①：审计测试已移出） |
+| 07+09 | 01 03 05 06 07 09 | 68 passed | PASS（**成对不可分**；不含审计测试，注①） |
+| 08 | 01 03 05 08 | 43 passed | PASS |
+| 10 | 01 02 03 05 06 10 **12** | 67 passed | PASS |
+| 11 | 01 03 05 06 **07 09** 11 | 72 passed | PASS（需 PR-07 的 `_oscar_dbg`） |
+| 12 | 01 02 03 05 06 12 | 57 passed | PASS |
+| 13 | 01 03 05 06 13 | 41 passed | PASS |
+| 14 | 01 03 05 06 13 14 | 44 passed | PASS |
+| 15 | 01 03 05 06 10 12 15 | 60 passed | PASS |
+| 16 | 01 02 03 05 06 10 12 13 14 16 | 73 passed | PASS |
+| 17 | 01 03 05 06 07 09 10 12 17 | 87 passed | PASS |
+| 18 | 01 02 03 05 06 07 09 10 12 13 14 16 18 | 102 passed | PASS |
+| 19 | 01–19 全部 | **123 passed** | PASS（**含接收的 4 条包级审计测试**——从 ctx 文件移到 assembly 文件、同基座同总数，见注①） |
+| 20 | 01–20 全部 | 123 passed | PASS |
+| 21 | 01–19 + 21 | **135 passed**（适配已进分支本体，注②） | PASS |
+| 22 | 01–19 + 21 + 22 | **135 passed**（适配已进分支本体，注②） | PASS |
+
+注①（2026-10-24 二轮重排，取代初版结论）：06 原带的 4 条**包级审计**测试（`test_backend_modules_have_no_star_imports`、`test_registry_names_never_bare_globals`、`test_remaining_bare_globals_names_are_module_local`、`test_every_module_registry_binding_is_the_ctx_object`）扫描**整包**模块，而 06（ctx 枢纽）基座上包不完整，**在自己单元基座上必然失败**——初版把它们记作「设计使然的假失败」不成立，已按测试语义归位：
+- **接收单元＝19（装配单元）**。理由：(a) 四条断言都是整包不变式（全模块无 star import、11 个 handoff 名不走裸 globals()、其余裸 globals() 名模块局部、每模块 `_R2XX_G` 绑定同一 ctx 对象），只有在**包含完整包的树**上才可断言且才有意义；(b) 19（`e2638eae2` "assemble the INT2 backend from the twelve mixins"）是第一个 15 个包模块齐全的单元（其闭包＝01–19）；(c) 其测试文件 `test_int2_assembly.py` 语义即「装配审计」（方法清单 53/12 mixin），整包审计属同一审计职责；(d) 07+09 基座只含 ~6 个模块（缺 08/10-18），把整包门放那里只会**欠审计**；17 是 decode mixin（基座缺 08/11/13-16/18），同样不完整。
+- 实现：`7a23bec98`（06 侧：`test_int2_ctx.py` 只留 4 条 ctx 模块内契约测试）+ `e5e688038`（19 侧：4 条审计测试连同 `AUDIT_REGISTRY_NAMES`/`_AUDIT_GLOB` 进 `test_int2_assembly.py`，测试名不变）。驱动 `ut_matrix3.sh`（闭包修正含 11 需 07+09），16 行全绿：06 **16/16**、19 **123**（审计 4 条从 ctx 文件移入 assembly 文件、同基座同总数）、20 123、21/22 **135**；07+09..18 各行数字−4（其基座本就不该跑整包审计）。05/08 闭包不含 06，数字不变（37/43）。
+- `m-port-full-ut`（81295d899）集成分支不动：整包在位，`test_int2_ctx.py` 9 条照旧全绿（135 计数不变）。
+
+注②（2026-10-24 更新：适配已进分支本体）：21/22 首轮各有 5 failed，全部在 `tests/ut/oscar/test_kv_int2.py`——main 把 release 线的 `get_cache_scale(kv_type, name)` 谓词换成了 `get_cache_scale_mapper() -> WeightsMapper`，且 `modelslim_config` 不再导出 `FusedMoE`。适配内容（`81295d899`）：改用 `AscendModelSlimConfig.get_cache_scale_mapper(SimpleNamespace(...)).map_name()`；INT2 offset 名字**原样透传**而非 None；去掉 `msc.FusedMoE` patch；补 `_update_packed_modules_mapping` 桩。该提交现已 cherry-pick 进 **prep-unit-21 / prep-unit-22 分支本体**（不再依赖外部测试文件替换；`ut_fixup3.sh` 方式作废）。验证＝自 fork 推送后 ref 的**全新 worktree**（`/tmp/r218_p21_check`、`/tmp/r218_p22_check`）用分支自带测试跑 `tests/ut/oscar`：**135 passed / 135 passed**。
+
+### 1.3 分支与 SHA（本地 / fork `github.com/nqz1997/vllm-ascend`）
+
+集成主分支（已推送并 `ls-remote` 校验）：
+
+| 本地分支 | SHA | fork 分支 |
+|---|---|---|
+| `m-port-full-ut` | `81295d899` | `oscar-int2/m-port-full-ut` |
+
+预览分支（fork 上命名 `oscar-int2/prep-unit-NN`；均为"就绪但因上游未接受 01/03 而 blocked"）。**2026-10-24 二轮（force 更新，`--force-with-lease`）**：除 05/08（闭包不含 06，树未变）外全部重推，嵌入注①的审计归位两提交（`7a23bec98`→06、`e5e688038`→19）与注②的 21/22 测试适配：
+
+| 单元 | 本地分支 | 本地 SHA | fork SHA（二轮后经 GitHub API 复核一致；git 协议超时） |
+|---|---|---|---|
+| 05 | `utc-05` | 6e401e6e2 | 6e401e6e2 |
+| 06 | `utc-06` | 048e14aa3 | 048e14aa3 |
+| 07+09 | `utc-0709` | 1ce0a1ea6 | 1ce0a1ea6 |
+| 08 | `utc-08` | fe6357aec | fe6357aec |
+| 10 | `utc-10` | b2426d27f | b2426d27f |
+| 11 | `utc-11` | 69b1f313d | 69b1f313d |
+| 12 | `utc-12` | b83e01f18 | b83e01f18 |
+| 13 | `utc-13` | d7472545f | d7472545f |
+| 14 | `utc-14` | c56976240 | c56976240 |
+| 15 | `utc-15` | 5585d499a | 5585d499a |
+| 16 | `utc-16` | 3f3d16fb0 | 3f3d16fb0 |
+| 17 | `utc-17` | cc57ace5a | cc57ace5a |
+| 18 | `utc-18` | 7b4902457 | 7b4902457 |
+| 19 | `utc-19` | d6eaad09c | d6eaad09c |
+| 20 | `utc-20` | 008b7fc8b | 008b7fc8b |
+| 21 | `utc-21` | db15c9224 | db15c9224 |
+| 22 | `utc-22` | eab326066 | eab326066 |
+| 05+06 依赖组 | `prep-depgrp-05-06` | 90340bb70 | 90340bb70 |
+
+标签：`r218-prep-depgrp-05-06-blocked-on-01-03` → `90340bb70`（**blocked 标记载体**）。
+（推送输出已确认 `* [new tag] r218-prep-depgrp-05-06-blocked-on-01-03 -> r218-prep-depgrp-05-06-blocked-on-01-03`，本地 tag 指向同一对象；事后复核 `ls-remote` 因网络 HTTP/2 抖动未能再次连通，非推送失败。）
+
+> （初版 `ut2-11b`/`ut2-17`/`ut2-18` 已被二轮统一命名 `utc-*` 取代。）
+> 预览分支内容 = 最小闭包基座 + 该单元，**不含**测试适配；用途是复现 UT 而非提交候选。提交候选仍是 01–04（已投）与将来基于 main 重建的 05+。
+
+### 1.4 维护者接受的依赖评审方式（核实结论）
+
+已核实的证据：
+
+- `CONTRIBUTING.md` 只有指向官方 contributing 文档的指针；`docs/source/developer_guide/contribution/*.md` 未出现 stacked PR / dependent PR / 依赖声明机制。
+- `docs/source/developer_guide/contribution/testing.md:282`：`main2main` 是 **CI 标签**（对 vLLM main 已验证 commit 与对应 release tag 各跑一次全量），**不是**依赖评审方式。
+- `.github/PULL_REQUEST_TEMPLATE.md` 为通用模板（What/Why、user-facing、How tested），无依赖字段。
+- 现有 4 个 Draft（#19577/#19568/#19569/#19570）均为 **main 基、独立可评审的最小差异**。
+
+**明确说明**：上游只接受 main 基、可独立评审的 PR；不存在"跨 fork 堆叠"通道。fork 内部 Draft 不构成上游贡献。因此 **05–22 不开上游 PR**，仅在 fork 上备好分支并标 "ready, blocked on 01+03 / 01"（本表 + 标签即标记）。待 #19577（01，release 基）与其 main 基对应项被接受后，按同一"最小差异"方法逐个重建提交。
+
+---
+
+## 2. 任务 2 — `18d56c698` 六项修复 → 贡献单元映射
+
+先核实：**四个已提交 PR（01–04）都不触碰这六个文件**（`m-pr-01/02/04` 文件集合无 `patch_kv_cache_dtype.py`、`worker/worker.py`、`int2/quantcache.py`、`int2/bridge.py`、`int2/slotstate.py`、`attention/attention_v1.py` 的这些 hunk）→ **不需要改动已投 PR**。
+
+| # | 修复 | 文件 | 归类 | 归属贡献单元 | 是否需要新 PR |
+|---|---|---|---|---|---|
+| 1 | INT2 存储 dtype 注册（`STR_DTYPE_TO_TORCH_DTYPE["int2_per_token_head"]=uint8` + `_CACHE_DTYPE_WITH_ASCEND` 增补 + 幂等检查） | `patch/platform/patch_kv_cache_dtype.py` | **main-only**（release 线无此文件；全树仅 pr-21/22 的 `get_kv_cache_shape`/`model_runner_v1` 引用 int2） | 需并入将来的 **PR-21/22** 或单开一个 "platform dtype registration" 单元 | 是（新单元，或并入 21/22） |
+| 2 | worker 侧 `cache_dtype == "int2_per_token_head" → torch.uint8` | `worker/worker.py` | **main-only**（main 的 worker 走 `STR_DTYPE_TO_TORCH_DTYPE` 查表；release 线不同） | **PR-22** | 否 |
+| 3a | release 线 kvcomp/hamming-sparse 分支剔除（main 无该特性） | `attention/attention_v1.py`（`enable_hamming_sparse`） | **main-only** | **PR-20** | 否 |
+| 3b | INT2 免静态量化 recipe 门（`enable_c8_quant=False`） | `attention/attention_v1.py` | **upstream-general**（INT2 自带 per-token-head scale，不能依赖 C8 的 checkpoint recipe） | **PR-20** | 否 |
+| 4 | 分页 scatter 从 `.view()` 平坦化改为 `(block, offset)` 跨步写（V2 block-strided pages） | `int2/quantcache.py` | **main-general**（V2 runner 物理页有 padding，任何 V2 后端都适用） | **PR-12** | 否 |
+| 5 | CANN 根目录改为环境解析（`ASCEND_HOME_PATH`/`ASCEND_TOOLKIT_HOME`，回落 `/usr/local/Ascend/cann-9.0.0`）替代硬编码 | `int2/bridge.py`（3 处 include/LD/rpath） | **upstream-general**（上游 CI 镜像 CANN 版本不同） | **PR-13**（或并入 PR-01 的路径处理） | 否 |
+| 6 | HP 行池 +1（`_tt_mseq = max(_TT_MAX_SEQS, 4, _mns + 1)`，V2 runner 可能追加 1 个 padding 请求） | `int2/slotstate.py` | **main-general**（V2 批宽 = max_num_seqs+1） | **PR-07** | 否 |
+
+**最小通用实现状态**：3b/4/5/6 的实现即上表所在分支的现有实现（main 线代码就是"最小通用"形态——不含本机路径、不含 release 线特性假设），并已被 §1.2 的 UT 覆盖（对应单元 PASS）。1/2 是 **main 独有胶水**：需要在 main 线新增/复用一个单元把"dtype 注册"从本地适配提升为上游可接受的通用实现（当前实现已写成通用形式：环境变量解析、`setdefault` 幂等、无本机绝对路径），**新 PR 依赖 01（#19577）先合并**，否则注册代码没有 INT2 消费者可评审。
+
+---
+
+## 3. 任务 3 — 默认异步故障定位（同等最高优先）
+
+### 3.1 最小复现（已定稿，可独立重放）
+
+**场景**：单请求、1080 token 提示（`"The quick brown fox jumps over the lazy dog. "` 截断到 4860 字符）、`max_tokens=24`、`temperature=0`、`--enforce-eager`、默认异步。
+**几何**：prefix 128 + recent 896 = 1024 走 HP bf16 环；中层 = 1080 − 1024 = **56 token** 走 INT2 分页缓存。
+
+| 对照 | 结果 |
+|---|---|
+| 默认异步 | **5/12 坏**（整段 24 token 全为 `!` 的退化输出） |
+| `ASCEND_LAUNCH_BLOCKING=1`（同请求、同配置、仅此变量不同） | **0/12** |
+| 无中层（890 token，4 行批） | **0/6** |
+| 前缀缓存关闭（有中层） | 7/12 坏 |
+
+判定：故障**与 INT2 中层路径共存亡**，与批大小、前缀缓存无关；blocking 只证明"时序相关"，不作归因（未据此归因 CANN）。
+
+### 3.2 二分与消融（全部在 NPU 7、flock 内、逐 leg 停服）
+
+| 腿 | 配置 | 请求 | 坏/总 | 结论 |
+|---|---|---|---|---|
+| `int2base` | 生产默认 | ragged/l4/l4mix/long2 ×6 | 18/24 | 基线 |
+| `bf16a` | **BF16** 同请求 | 同上 | **0/24** | 非框架/CANN 通用竞态，属 INT2 路径 |
+| `e_nobatched` | `R161_BATCHED_MID=0` | 同上 | 18/24 | **死开关**（主树 0 处读取），A/B 无效 |
+| `e_nofused` | `R152_FUSED=0` | 同上 | 18/24 | **死开关**（同上） |
+| `e_up1` | `R218_UPSYNC=1` | 同上 | 18/24 | 图路径专用，eager 无效 |
+| `e_up3` | `R218_UPSYNC=3` | 同上 | 17/24 | 同上 |
+| `e_pyquant` | `R113_QUANT_CPP=0` | 同上 | 11/24 | C++ 量化器**有贡献但非唯一因** |
+| `e_nomiddle` | `R109_THREETIER_MIDDLE=0` | — | 启动即 507015 aicore 异常 | 不支持配置，**不能作阴性对照** |
+| `noprefix` | `--no-enable-prefix-caching` | l4/ragged ×6 | 7/12 | 前缀缓存**非必要条件** |
+| `x900x4` | 4 行 × ~890 token（无中层） | ×6 | **0/6** | 无中层→不坏 |
+| `x1601x1` | B=1 1601 token（中层 577） | ×12 | 8/12 | B=1 也坏 → 非批/行交错问题 |
+| `x1601x1_blk` | 同上 + `ASCEND_LAUNCH_BLOCKING=1` | ×12 | **0/12** | 时序相关 |
+| `x1080x1` | B=1 1080 token（中层 56） | ×12 | **5/12** | **最小复现** |
+| `x1080_wsync` | + `R166_WSYNC=1`（每次分页写后 device sync） | ×12 | 9/12 | 写→读边**不是**缺口 |
+| `x1080_hpsafe` | + `R164_PREFILL_SAFE=1`（HP 环写用自有 clone+sync） | ×12 | 8/12 | HP 写生命周期**不是**主因 |
+| `x1080_pymid` | + `R113_MIDDLE_CPP=0`（Python 中层操作数准备） | ×12 | **11/12** | **换 Python 操作数准备路径不治**。⚠更正（2026-10-24 复核）：该腿**不构成对中层自定义算子的排除**——`R113_MIDDLE_CPP=0` 只把操作数 staging 从 C++ `oscar_middle_prep` 换回 Python ATen，`R112_LSE_FAST=1` 默认未变，自定义算子仍被调用（`middle_candidate.py:542 launch_lse_fast`；`R133_GRAPH_V1=1` 时 :504/:530 `launch_lse_v1_own`；R112_LSE_FAST=0 时 :563 `launch_lse`），见 §3.5 |
+| `x1080_qsync0` | + `R113_QUANT_SYNC=0` | ×12 | **12/12** | 量化器→scatter 的 host sync **确实掩盖了一条边**（5/12→12/12），但**不是**主因 |
+
+### 3.3 已排除 / 已确认
+
+- **排除（复核后仍成立，均不依赖 pymid 腿）**：框架/CANN 通用发射竞态（BF16 0/24）、前缀缓存交互（noprefix 仍坏）、批宽/行交错（B=1 仍坏）、分页写→读顺序（写后 device sync 不治，反而 9/12）、HP 环写的 copy-engine 生命周期（`R164_PREFILL_SAFE=1` 不治）。
+- **⚠撤回（2026-10-24）**：原「排除 INT2 中层 C++ 算子（Python 中层路径仍 11/12）」**不成立**。`R113_MIDDLE_CPP=0` 时 Python 准备路径**仍调用**自定义算子（`launch_lse_fast`/`launch_lse_v1_own`/`launch_lse`），pymid 腿只证明「换 Python 操作数准备不治」，中层自定义算子回到**候选集**（见 §3.5 file:line）。
+- **确认**：故障需要 INT2 中层存在（无中层 0/6）；表现为**整段退化**（24 token 全 `!`），即首个 decode 步的注意力输出已崩。
+- **⚠降级（2026-10-24）**：原「存在两条以上独立边」改为**观察**：失败率随同步/量化器开关显著变化（`R113_QUANT_SYNC` 0→12/12 vs 1→5/12；`R113_QUANT_CPP` 0→11/24 vs 1→18/24）——host sync 确实掩盖了至少一条通路，但**不能据此断言独立边数**（同一缺陷在不同时序下可有不同触发率）。
+
+### 3.4 结论与后续（OPEN）
+
+- 症状在 **INT2 中层（paged INT2 KV）参与的首个 decode**：prefill 只写不读中层（prefill 注意力走 float KV，见 `int2/prefill.py:35` 文档串），decode 首次 gather+dequantize 中层时输出即退化。
+- 量化器同步边（`R113_QUANT_SYNC`）已证非充分修复；**C++ 中层算子排除已撤回**（§3.5），故剩余候选＝ **eager 三层 decode 胶水**（中层 gather/dequant 的输入：block table、slot、scale 缓存，与 HP 环 slide / 元数据填充之间的流序、`_ensure_int2_scale_buffers` 首次分配与首次读的先后）**∪ 中层自定义算子本身在异步时序下的行为**。对后者的正确定性须用独立纯 torch 参考（保持量化后操作数、旋转、布局、有效长度、LSE 语义一致）重做，不再拿 `R113_MIDDLE_CPP` 开关当排除证据。
+- 进一步收敛建议（按性价比）：在 eager 路径逐点插入 device-side 事件等待（不改变语义、不加 host sync），二分"gather 输入前 / dequant 后 / HP slide 后"三点；配合 `R218_QINDUMP` 之类的 dump 判断"存进去的就错"还是"读出来才错"。
+- **当前状态 OPEN**：未取得 0/N 的可合入最小修复，因此不声称异步正确性关闭。复现脚本与全部原始日志见 §6，任何一方可直接重放（单 leg ~2.5 分钟）。
+
+
+### 3.5 【更正记录】`R113_MIDDLE_CPP=0` 不排除中层自定义算子（2026-10-24 方法论复核）
+
+复核基线：`m-port-full-ut` @ `81295d899`，`vllm_ascend/attention/int2/middle_candidate.py`（`_r109_middle_candidate`）：
+
+- `:81-82`：`R113_MIDDLE_CPP == "1" and R112_LSE_FAST == "1"` 才进入 C++ 单调用准备分支（`:226 oscar_middle_prep`；R118 统一 staging 腿 `:219 launch_lse_fast` 也在该 gate 内）。
+- `R113_MIDDLE_CPP=0` 时落到 Python ATen 操作数准备（gather/permute/`[:mid_len]` 截断/scale 展平/`torch.matmul(q,R_k)`，约 `:315-410`），随后**仍调用自定义算子**：`:416` `R112_LSE_FAST=="1"` → `:542 launch_lse_fast`（默认腿；pymid 腿仅 `-e R113_MIDDLE_CPP=0`，`R112_LSE_FAST` 取 `serve_int2_exp.sh:14` 默认 1）；`R133_GRAPH_V1=1` 时 → `:504`（R136 unified）/`:530`（R135 tight）`launch_lse_v1_own`；`R112_LSE_FAST=0` 时 → `:563 _r91_mod.launch_lse`。
+- `middle_exec.py:484-485`：批化中层路径同样要求 `R113_MIDDLE_CPP=1`，pymid 腿的批化入口也关闭，全部中层调用走上述 per-row 候选。
+
+结论：pymid 腿（11/12）的自变量＝「操作数准备 C++→Python」，**自定义注意力算子（launch_lse* 家族）在两腿中都在执行**。故该腿只证明「换 Python 准备路径不治」，不能作为「C++ 中层算子无罪」的排除证据。GPT 的判断与源码一致，本节据此更正 §3.2/§3.3/§3.4 与 `MAIN_SERVICE_VERIFY_20261024.md` §6.2（替换文本已交主 Agent）。
+
+---
+
+## 4. 任务 4 — 2.00× 容量对账（可复算）
+
+### 4.1 实测事实
+
+| 量 | INT2 | BF16 | 来源 |
+|---|---|---|---|
+| Available KV cache memory | 21.04 GiB | **21.04 GiB** | serve 日志 `worker.py:748` |
+| NPU KV cache size | 306,432 tokens | 153,216 tokens | `kv_cache_utils.py:2464` |
+| 比值 | **2.0000×** | 1× | 与 uint8/bf16 元素宽度比完全相同 |
+
+（日志：`/tmp/serve_int2base.log`、`/tmp/serve_bf16a.log`，容器 `r218-main-verify`。）
+
+### 4.2 引擎记账 vs 物理记账
+
+引擎侧：`Attention.get_kv_cache_spec`（`vllm/model_executor/layers/attention/attention.py:671-678`）构造
+`FullAttentionSpec(block_size=128, num_kv_heads=8, head_size=128, head_size_v=128, dtype=uint8)`；
+`AttentionSpec.unpadded_page_size_bytes = num_heads × num_states × (head_size + head_size_v) × dtype_size`
+（`vllm/v1/kv_cache_interface.py:528-536`）→ **8 × 128 × 256 × 1 = 262,144 B/block = 2,048 B/token/层**。
+`num_blocks = 21.04 GiB / (262,144 × 36) = 2,394` → 306,432 token。
+
+物理侧（`attention_v1.py:276-290` 的 `get_kv_cache_shape` = `(2, nb, 128, nkv, 128//4)`）：
+
+| 组成部分 | 每 block | 每 token/层 | 总量（2394 block, 36 层） | 出处 |
+|---|---|---|---|---|
+| INT2 packed K/V `uint8` | 65,536 B | 512 B | **5.26 GiB** | `get_kv_cache_shape` |
+| 四组 scale/zero 缓存 bf16 `[nb,128,8]` | 8,192 B | 64 B | **0.66 GiB** | `int2/quantcache.py:267-307` |
+| HP 环 bf16 `[36,2,ms,1028,8,128]`，ms = max(32, 4, 33) = 33 | —（与 block 无关） | — | **4.66 GiB** | `attention_int2.py:206` + `slotstate.py:188` |
+| 合计 | | **576 B** | **10.58 GiB** | |
+| 未使用（同预算内） | | | **10.46 GiB（49.7%）** | |
+
+**对账结论**：2.00× 不是 INT2 的真实容量收益，只是 dtype 宽度比。引擎按 `head_size=128`（每 token 每层 2048 B）记账，而物理 packed 只需 512 B + 64 B scales = 576 B → **引擎记账是物理的 3.56×**。BF16 的 4096 B/token/层是准确的，所以相对 BF16 只显示 2×。HP 环（bf16 三层环）不在这份 spec 里，靠剩余空间吸收，因此**从 21.04 GiB 里并未扣除**（证据：INT2 与 BF16 报告的可用内存完全相同 21.04 GiB，说明 profile 阶段未计入 HP 分配）。
+
+### 4.3 真实可服务并发（可复算）
+
+- 现值：306,432 token = 149.6 × 2048（引擎自报 "Maximum concurrency for 2,048 tokens per request: 149.62x"）。
+- 物理密度上限（**预留** HP 环）：(21.04 − 4.66) GiB / (576 B × 36) ≈ **0.85M token** = 现值的 **2.77×** = BF16 的 **5.53×**。
+- 若不预留 HP（HP 落入剩余空间）：21.04 GiB / (576 × 36) ≈ **1.09M token** = 现值的 **3.56×** = BF16 的 **7.11×**。
+
+### 4.4 最小修复（独立分支已设备验证，2026-10-24 05:35Z）
+
+主线的 `AttentionSpec` 已有一等字段 `state_content_bytes`（`vllm/v1/kv_cache_interface.py:502-507`，专为"packed 布局"设计），因此修复不需要改 vLLM：
+
+1. 在 vllm-ascend 的 spec 收集处（`worker/v1/model_runner.py:7022 get_kv_cache_spec`、`worker/v2/attn_utils.py:200`）对 INT2 层把 spec 重写为 packed 记帐：
+   `state_content_bytes = 2 × (head_size // 4) + 4 × dtype_size(model_dtype)`（Qwen3-8B = 64 + 8 = **72 B**）
+   → page = 8 × 128 × 72 = **73,728 B/block**（当前 262,144 B）。
+2. 在 `worker/worker.py:determine_available_memory`（`worker.py:719-724` 已有 `R150_MAX_KV_GB` 上限的先例）**扣除 HP 环字节**，避免把 4.66 GiB 环挤爆。
+3. 注意：vLLM 的 `AttentionBackend.customize_spec` 目前只在 sliding-window 分支被调用（`attention.py:628-650`），full-attention 分支不调，所以必须由 vllm-ascend 自己的 runner 做后处理；`max_memory_usage_bytes` 随之变小，纯 full-attention 模型无影响，混合模型需复查 hybrid planner。
+
+**状态：修复已验证；产品结论仍 OPEN**。主 Agent 于 2026-10-24 05:08–05:35Z 在独立分支
+`oscar-int2/capfix-int2-spec`（fork `d1db5264`，本地 `d67b3a0b1`，补丁 sha256
+`8289c8bf…`）完成设备实测：在 `attn_utils.get_kv_cache_spec` 发布 packed
+`state_content_bytes=72`，并在 worker 预算中扣除 HP 环 4.64 GiB 后：
+
+- `Available KV cache memory: 16.40 GiB`；`NPU KV cache size: **849,280 tokens**`
+  （修复前 306,432 = **2.77×**；BF16 153,216 = **5.54×**）；
+  物理校验 849,280 × 576 B × 36 = 16.40 GiB；
+- 新增 7 条 UT（打包页/边界/HP 几何），上游镜像内全量 `tests/ut/oscar` = **142 passed**；
+- blocking 诊断姿态：中层 24/24 + 通用 17/17 = **41/41**；默认异步 1080 tok 仍 12/12 坏
+  （负对照，容量修复不改变异步缺陷）。
+
+未合入 `m-port-full-ut`、未开上游 PR；正式（默认异步关闭后）姿态复跑前，"内存收益"
+作为产品结论保持 OPEN。详见 `MAIN_SERVICE_VERIFY_20261024.md` §7。
+
+### 4.5 HP 环预留核对（2026-10-24 二轮，CPU 源级；capfix `d67b3a0b1`）
+
+**(a) `_oscar_int2_hp_ring_bytes` 异常时 warning + return 0 —— 有意的 fail-open，确认。**
+`worker/worker.py:642-680`：整个几何计算包在 `try/except Exception` 中，失败时
+`logger.warning(..., exc_info=True)` 后 **return 0** → `determine_available_memory`
+里 `if _hp_bytes:` 不扣减（`worker.py:757-763`），KV 预算与**修复前行为完全一致**。
+意图：预留只是记账修正（把环从"隐式吃剩余空间"改为"显式扣减"），任何内省失败
+（hf config 形状意外、oscar 配置未加载）都**不应阻断启动**。残余风险如实记：打包页
+后池可以吃满整个预算，若该函数静默失败，环稍后分配可能启动期 OOM——这正是旧行为
+在 INT2 打包页下的问题。**建议（仅建议，不改码，修复保持独立可追溯）**：失败时回落
+保守常量（至少 `layers×2×(mns+1)×(prefix+recent)×nkv×hd×2` 的最小几何）或加一个
+fail-closed 开关 env；现有 `exc_info=True` 告警已可被日志监控捕获。
+
+**(b) 几何对照表（worker 预留 vs 实际分配，逐项）**
+
+| 项 | worker 预留（`worker.py:642-680`） | 实际分配（`attention_int2.py:200-207` + `int2/slotstate.py:76-116,188-200`） | 一致 |
+|---|---|---|---|
+| layers | `hf.num_hidden_layers` | `_tt_hp_bufs` 每层一分配（36 层全走 HP） | ✓ |
+| nkv | `hf.num_key_value_heads`（缺省回退 heads） | backend `num_kv_heads`（同源 hf） | ✓ |
+| head_dim | `hf.head_dim` or `hidden//heads` | `head_size`（同源） | ✓ |
+| dtype 字节 | `get_dtype_size(model_config.dtype)`（bf16=2） | 环 buffer dtype＝调用侧 query/kv dtype（bf16 服务） | ✓ |
+| ms | `max(R109_TT_MAX_SEQS 默认4, 4, mns+1)`（`:652`） | `max(_TT_MAX_SEQS 同env同默认, 4, mns+1)`（slotstate:84） | ✓ 同式同默认 |
+| R205_HPFIT=1 | `ms = max(4, min(ms, mns+margin 默认8))`（`:653-656`） | `max(4, min(_tt_mseq, mns+margin 默认8))`（slotstate:100-104） | ✓ 同式 |
+| mhp | `prefix+recent+(0 if R199_PRREAD else 4)`（`:657-658`） | `_TT_MAX_HP` 同式（attention_int2:206-207） | ✓ |
+| 总字节 | `layers×2×ms×mhp×nkv×hd×dsize` | per-layer `2×[ms,mhp,nk,hd]`（slotstate:192-194）×layers | ✓ |
+
+UT 钉住三组合：默认 `36×2×33×1028×8×128×2 = 5,002,297,344`；`R199_PRREAD=1`→1028→1024；
+HPFIT 封顶 `36×2×40×1028×8×128×2`（`tests/ut/oscar/test_int2_kv_spec.py:86-107`）。
+
+**两处如实记录的边界（非缺陷）**：
+1. `R144_TT_REQID=1` 分支（slotstate:77-78：`_tt_mseq = max_num_seqs`，**无 +1、无下限 4、无 env cap**）worker 公式**不建模**——此时预留恒 ≥ 实际（多预留一行方向，安全但虚高）。该开关默认 0，生产姿势不启用。
+2. HPFIT 失败模式不对称：worker 全函数 try→0（不扣减）；slotstate 内层 try→保持大 env cap（多耗 HBM）。成功路径逐字节同式。
+3. 数字勘误口径：§4.2 表的 4.66 GiB 用了 `mhp=1028`（PRREAD 关）；canonical 姿势 `R199_PRREAD=1`（`canonical_env.sh:118`）→ `mhp=1024` → **4.64 GiB**，与 capfix 四条 serve 日志的 `reserving 4.64 GiB` 一致（`MAIN_SERVICE_VERIFY` §7 已有同款注记）。
+
+---
+
+## 5. 立场
+
+- 默认异步正确性 **OPEN**：在拿到 0/N 的最小通用修复（优先 device-side 事件等待）之前，不声称服务级正确性关闭。
+- 不以外层 `ASCEND_LAUNCH_BLOCKING=1` 的回归替代正式（默认异步）模式验收；该对照只用于**判定时序相关性**，不作归因证据（尤其不据此归因 CANN）。
+- 不声称 main 线可生产：main 集成分支只证明"可启动 + UT 135 全绿 + 复现电池"，正确性与性能口径均未建立。
+- 不引用交付树（release 线）的精度/性能数字。
+
+---
+
+## 6. 原始证据位置
+
+| 内容 | 路径 |
+|---|---|
+| 异步电池原始输出 | `/tmp/r218_async_diag/battery_<tag>.txt`、`<tag>.analysis.txt`、`<tag>.status` |
+| 异步驱动 | `verify_scripts/async_diag.sh`、`async_bisect{,2,2b,3,4,5}.sh`、`analyze_battery.py` |
+| serve 日志 | 容器 `r218-main-verify:/tmp/serve_<tag>.log` |
+| UT 日志 | `ut_matrix2_20261024.{log,tsv}`、`ut_matrix1_20261024.{log,tsv}`、`ut_fixup3_20261024.log`；**二轮（归位后，以此为准）**：`verify_scripts/ut_matrix3_20261024.{log,tsv}` |
+| UT 驱动 | `verify_scripts/ut_matrix.sh`、`ut_matrix2.sh`、`ut_fixup3.sh`、**`ut_matrix3.sh`**（审计归位+21/22 适配进分支）；归位两提交 `7a23bec98`（06）/`e5e688038`（19） |
+| P6 工具 | `verify_scripts/p6_run.sh`（设备腿驱动）、`p6_compare.py`（qin/midcap 对比+纯 torch 中层参考）、`p6_mdiag_diff.py`（R117 哈希流逐记录对比）；工件落地 `/tmp/r218_p6_host/<tag>/` |
+| 预览工作树 | `/tmp/r218_ut_bases`（UT 基座）、`/tmp/r218_mpf_ut_3270309`（分支 `prep-depgrp-05-06`） |
+| 集成树 | `/home/n00928095/R218_UPSTREAM_WORK/oscar_port_ut_tree`（`m-port-full-ut`） |
+| 请求样例 | 容器 `/tmp/req_900x4.json`、`/tmp/x900x4_req.json`、`/tmp/x1601x1_req.json`、`/tmp/x1080x1_req.json`、`/tmp/l4_req.json`、`/tmp/ragged_req.json` |
+| 容量修复 | `R218_UPSTREAM_WORK/int2_capacity_fix.patch`（sha256 `8289c8bf…`）、`acceptance/report_eval/capacity_20261024/`（尺寸日志/24-24+17-17 电池/异步负对照/复算 README）、工作树 `R218_UPSTREAM_WORK/capfix_tree` |
+| 容量服务日志 | 容器 `r218-main-verify:/tmp/serve_capfix2_blk.log`、`/tmp/serve_capfix17_blk.log` |
+
+复现最小用例：
+
+```bash
+# 容器内已就绪的 1080-token 请求文件 /tmp/x1080x1_req.json
+flock /tmp/r218_npu7.lock -c \
+  'R218_DIAG_FILES=x1080x1 R218_DIAG_REPS=12 bash verify_scripts/async_diag.sh x1080x1 int2exp'
+# 对照（仅差一个环境变量）
+flock /tmp/r218_npu7.lock -c \
+  'R218_DIAG_FILES=x1080x1 R218_DIAG_REPS=12 bash verify_scripts/async_diag.sh x1080x1_blk int2exp ASCEND_LAUNCH_BLOCKING=1'
+```
+
+---
+
+## 7. 需要主 Agent 决策 / 与 B 线可能的冲突
+
+1. **是否新开一个 main 线 "platform INT2 dtype registration" 上游单元**（§2 第 1 项）；它依赖 #19577 先合并才有可评审对象。
+2. **容量修复是否要做进本轮**：需 main 线设备实测（~10 分钟 serve + 电池）确认 306,432 → ~0.85M 且正确性不变；会改变 `page_size_bytes` 的所有消费者，建议单独一轮、单独分支。
+3. **设备/文件占用**：本轮全程 NPU 7 + `/tmp/r218_npu7.lock`，每次 leg 后已停服（NPU 7 回落到 3.4 GB 基线）。若 B 线也要 NPU 7，请沿用同一 flock；若 B 线要求独占，请指示切换。
+4. **异步 OPEN 的对外口径**：建议在验收结论中明确写"默认异步存在 INT2 中层退化缺陷（最小复现 1080 token 单请求 5/12），未关闭"，避免被 blocking 绿灯掩盖。
+
+---
+
+## 8. 主 Agent 复核（2026-10-24 04:45Z）
+
+复核方式：不采信子 Agent 自述，逐项对本地 ref / 原始日志 / 容器日志 / 源码与算术重算。
+
+| 复核项 | 结果 |
+|---|---|
+| fork 分支 ref | 本地 `origin/oscar-int2/prep-unit-*` 17 个 + `prep-depgrp-05-06` + `m-port-full-ut` 全部存在且 SHA 与 §1.3 表逐项一致。事后 `ls-remote` 两次遇 GitHub 网络抖动（超时/HTTP2），改由 **GitHub API** 逐项复核成功：`refs/heads/oscar-int2/prep-unit-*` 17 个 SHA 与表一致、`m-port-full-ut=81295d899`、tag `r218-prep-depgrp-05-06-blocked-on-01-03` → `90340bb70`（commit 对象）。<br>**另发现**：上游 PR #19569 的 head `oscar-int2/m-pr-03` 已推进到 `7ab5c7d36`（2026-10-23T09:58:55Z，父 `2d50a2e26`，仅改 `vllm_ascend/oscar/rotation.py`：声明 `_from_env_signature` 修 mypy attr-defined），超出本报告与旧账本记录的 `8f08f1931`；其余三个 PR head（`cbcc277db`/`cf66c61e1`/`936c58970`）与记录一致。**本会话已复验**：`git fetch` 到 `7ab5c7d36`（线性后代：`8f08f1931`→`2d50a2e26` ruff style→`7ab5c7d36` 一行声明），`pytest --noconftest tests/ut/oscar` = **13 passed**；diff 仅 `rotation.py`/`test_rotation.py`。 |
+| UT 数字 | `ut_matrix2_20261024.log/tsv` 与 §1.2 表逐行一致（05=37、06=16p/4f、0709=72、08=43、10=71、12=61、13=45、14=48、15=64、16=77、17=91、18=106、19=123、20=123）；`ut_fixup3_20261024.log`：11=**76 passed**、21=**135 passed**、22=**135 passed**。 |
+| 六个修复的代码 | `18d56c698` 的 diff 与 §2 表一致（`attention_v1.py` 两 hunk、`quantcache.py` 跨步写、`bridge.py` CANN 根、`slotstate.py` +1 行、dtype 注册、worker uint8）；commit 带 `Co-Authored-By`。 |
+| 01–04 不受影响 | `m-pr-01..04` 的变更文件集合与六个修复文件**无交集**（逐一 `git diff --name-only` 核对）。 |
+| 异步原始数据 | `/tmp/r218_async_diag/*.analysis.txt` 与 §3.2 表逐项一致；`x1080_pymid` 11/12、`x1080_wsync` 9/12、`x1080_hpsafe` 8/12、`x1080_qsync0` 12/12、`x900x4` 0/6、`bf16a` 0/24。**§3.1 的 1080+blocking 对照当时缺少原始文件**：主 Agent 于 04:28–04:32Z 在 NPU 7/flock 内补跑 `x1080x1_blk`，结果 **0/12**（`battery_x1080x1_blk.txt`、`x1080x1_blk.analysis.txt`、`x1080x1_blk.status`），该对照现已成立。 |
+| 容量对账 | 容器日志复核：INT2 `Available KV cache memory: 21.04 GiB`、`NPU KV cache size: 306,432 tokens`（149.62×2048）；BF16 同预算 `153,216`（74.81×2048）= 恰 2.0000×。`unpadded_page_size_bytes=262,144`（实测 `FullAttentionSpec(128,8,128,128,uint8)`）；packed K/V 65,536 B/block + 4×scale/zero 8,192 B/block；HP 环 `[36,2,33,1028,8,128]` bf16 = 4.66 GiB（`_TT_MAX_HP = 128+896`，ms=max(4,33)）。算术全部复现：5.26+0.66+4.66=10.58 GiB，闲置 10.46 GiB。主线 `state_content_size_bytes` 实测存在（默认 256 B/token，packed 目标 72 B），`state_content_bytes` 为可覆写字段。 |
+| "死开关" | `R161_BATCHED_MID` 仅被 `oscar/config.py` 解析后无消费者；`R152_FUSED` 在 `vllm_ascend/` 无读取点。与 §3.2 一致。 |
+| 依赖评审方式 | 复核 A 的结论成立：仓库内无 stacked/依赖声明机制；`main2main` 仅 CI 标签。05+ 不开上游 PR 的决定**采纳**。 |
+
+### 决策（主 Agent）
+
+1. **dtype 注册单元**：本轮不新开上游 PR；待 01（#19577）接受后，与重建的 21/22 一起作为"main 胶水"最小差异提交（A 的 §2 映射采纳）。
+2. **容量修复**：已完成独立分支设备验证（`oscar-int2/capfix-int2-spec` @ `d1db5264`；
+   306,432 → 849,280 tok，41/41 blocking 正确）；**不并入本轮集成分支、不开上游 PR**，
+   产品结论保持 OPEN，待默认异步关闭后正式姿态复跑（§4.4）。
+3. **设备**：NPU 7 现空闲、锁已释放；本轮主 Agent 仅用 04:28–04:32Z 一段补跑，不触碰其他卡/容器。
+4. **对外口径**：采纳 §5 与 §7.4——默认异步 **OPEN**，blocking 仅作时序判别，不归因 CANN，不标生产可用。
