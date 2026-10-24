@@ -126,14 +126,26 @@
 原始输出：`/tmp/r218_async_diag/battery_<tag>.txt`、`<tag>.analysis.txt`、`<tag>.status`；
 serve 日志：容器 `r218-main-verify:/tmp/serve_<tag>.log`。
 
-### 6.2 结论（OPEN）
+### 6.2 结论（OPEN；2026-10-24 晚更正＋定位更新，主 Agent 应用替换）
 
 - 故障**需要 INT2 中层参与**且 B=1 即可复现；BF16 同电池 0/24 → 不是框架/CANN 通用竞态。
-- INT2 **C++ 中层算子不是缺口**（Python 中层路径 11/12）；写→读同步、HP 环写生命周期均不治。
-- `R113_QUANT_SYNC=0` 使 5/12→12/12，说明量化器→scatter 的 host sync 掩盖了**一条**边，
-  但主因未闭合；至少两条独立流序边。
-- blocking 0/12 只支持"时序相关"，**不据此归因 CANN**；未取得可合入的最小修复前，
-  默认异步正确性保持 OPEN，不标生产可用。
+- 【更正】原「INT2 C++ 中层算子不是缺口（Python 中层路径 11/12）」**撤回**：
+  `R113_MIDDLE_CPP=0` 只把操作数准备从 C++（`oscar_middle_prep`）换回 Python ATen，
+  `R112_LSE_FAST=1` 默认未变，自定义算子仍被调用（`middle_candidate.py:542 launch_lse_fast`；
+  `R133_GRAPH_V1=1` 时 :504/:530 `launch_lse_v1_own`；R112=0 时 :563 `launch_lse`）。
+  该腿仅证明「换 Python 操作数准备不治」；中层算子的排除改由下条定位中的逐字节证据支撑。
+- 【更正】原「至少两条独立流序边」降级为**观察**：失败率随同步/量化器开关显著变化
+  （`R113_QUANT_SYNC` 0→12/12 vs 1→5/12；`R113_QUANT_CPP` 0→11/24 vs 1→18/24）——
+  host sync 确实掩盖至少一条通路，但不能据此断言独立边数。
+- 【新定位（设备轮 2，2026-10-24 13:16–14:53Z，详见 `delivery/PR_ADVANCE_20261024.md` §3.6）】
+  首个分歧张量＝**HP 环 bf16 行（recent 窗）**：坏 rep 首个 decode step 环行即与 blocking 分歧，
+  此刻 `key_rot/value_rot`（环写输入值）、q、INT2 中层页、中层算子输出**全部逐字节相同**；
+  张量级形态＝环 recent 窗 [128,1024) **NaN 污染**、每代恒增 1,310,720 元素（跨代残留）；
+  INT2 写侧（src_k/src_v/src_ks）12 rep 全程与 blocking 一致——「存进去就错」被否定。
+  写→读同步（9/12）、HP 环写生命周期（8/12）排除仍成立；环写机制候选
+  `R166_STREAMFIX=ring`（12/12）、`R164_EAGER_SLIDE`（9/12）不治。
+- blocking 0/12 只支持"时序相关"，**不据此归因 CANN**；未取得可合入最小修复前，
+  默认异步正确性保持 OPEN，不标生产可用。NaN 种子来源（外部越界写 vs 环读侧放大）OPEN。
 
 详细依赖表、分支/SHA、修复映射与容量对账见
 `delivery/PR_ADVANCE_20261024.md`。

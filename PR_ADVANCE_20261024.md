@@ -15,7 +15,7 @@
 | 上游依赖评审方式 | 仓库 CONTRIBUTING/docs/PR 模板**没有** stacked-PR 或"依赖 PR"机制；`main2main` 只是 CI 标签。→ **05+ 不开上游 PR**，只准备 fork 分支并标 blocked |
 | fork 产物 | `oscar-int2/m-port-full-ut` @ `81295d899` + 17 个 `oscar-int2/prep-unit-NN` 预览分支 + 1 个 blocked 标签（§1.3） |
 | 六项修复归属 | 2 项 main-only、4 项 upstream-general；**四个已提交 PR（01–04）都不需要改**（§2） |
-| 默认异步故障 | **定位进 INT2 中层（three-tier middle）读路径**；最小复现 = 单请求 1080 token，async 5/12 坏 vs blocking 0/12；**未找到可合入的最小修复 → OPEN**（§3） |
+| 默认异步故障 | **定位进 HP 环 recent 窗（三层 decode 的 bf16 环行）跨代 NaN 污染**：INT2 中层页与中层算子在分歧点逐字节无罪（§3.6）；最小复现 = 单请求 1080 token，async 5–12/12 坏 vs blocking 0/12；两个环写机制候选不治；**未找到可合入的最小修复 → OPEN**（§3.5/§3.6） |
 | 2.00× 容量 | 真因 = KV spec 用 `head_size`（未用 packed `head_size//4`）记账 = 每 token 每层 2048 B，物理 576 B；现池仅用掉 10.58/21.04 GiB。**独立分支已设备验证**：池 306,432 → **849,280 tok（2.77×；对 BF16 5.54×）**，HP 环 4.64 GiB 预留，blocking 电池 41/41（§4、`MAIN_SERVICE_VERIFY` §7）；产品结论仍 OPEN（未合入/未正式姿态复跑） |
 | 立场 | **OPEN**；不以 blocking 回归替代正式模式验收；不称 main 可生产（§5） |
 
@@ -196,6 +196,35 @@
 
 结论：pymid 腿（11/12）的自变量＝「操作数准备 C++→Python」，**自定义注意力算子（launch_lse* 家族）在两腿中都在执行**。故该腿只证明「换 Python 准备路径不治」，不能作为「C++ 中层算子无罪」的排除证据。GPT 的判断与源码一致，本节据此更正 §3.2/§3.3/§3.4 与 `MAIN_SERVICE_VERIFY_20261024.md` §6.2（替换文本已交主 Agent）。
 
+
+### 3.6 设备定位轮 2（2026-10-24 13:16–14:53Z，NPU 7 / flock，窗口见 lock log）
+
+驱动：`verify_scripts/p6_run.sh` + 探针（R117_MID_DIAG 为**树内** env 门探针；R218_KRVDBG/R218_RINGROWDBG 为本会话容器内临时补丁，**已还原**——容器 `middle_exec.py` md5 回到 `9ea86ce1…`，`git status` 干净）。
+
+| 腿 | 配置 | 结果 |
+|---|---|---|
+| `p6a_mdiag_async` | async + R117_MID_DIAG=1（哈希流） | **8/12 坏**（诊断同步不掩盖） |
+| `p6b_mdiag_blk` | 同上 + blocking | **0/12** |
+| `p6g_krv_async` | async + R117 + KRVDBG（环写输入值哈希） | **11/12 坏** |
+| `p6h_krv_blk` | 同上 + blocking | 0/12 |
+| `p6i_sfix_async` | + `R166_STREAMFIX=ring`（out= 写环） | **12/12 坏**（更差，不治） |
+| `p6j_eslide_async` | + `R164_EAGER_SLIDE=1`（恒 slide 语义） | **9/12 坏**（不治） |
+| `p6k_row_async` | async + 环行张量捕获（96 文件） | 12/12 坏 |
+| `p6l_row_blk`(rerun) | blocking 同上 | **NOT-READY**（设备内存残留：EngineCore 反复启停后 60.1/64G 未释放，无进程持有；p6z 复查同样 NOT-READY，环境性非回归） |
+
+**结论（每条都有原始文件）**：
+
+1. **好 rep 上 async==blocking 逐字节**：p6a 前 4 rep 全部 828×2 条记录（页 src_k/src_v/src_ks、环、q、中层 out/lse）与 blocking 完全一致。
+2. **写侧（INT2 页）无罪**：所有 12 rep 的 `src_k/src_v/src_ks` 哈希从不与 blocking 分歧——「存进去就错」被否定；量化页内容正确。
+3. **首个分歧张量＝HP 环 bf16 行**：坏 rep 首个 decode step 内（p6a rep5 rec18；p6g rep2 rec11）`ring_k/ring_v` 先分歧，此刻 q、中层页、**中层算子输出**全部仍与 blocking 逐字节一致；q 从下一记录起才错（该层 HP 层注意力读到坏环 → 输出错 → 后续全错）。中层自定义算子以「分歧点输入/输出逐字节一致」**直接排除该缺陷类**（不经 R113 开关）。
+4. **写落地被污染而非写值错**：p6g rep2 分歧点上 `key_rot/value_rot`（环写输入值）哈希与 blocking **相同**，环行却已不同——NaN 不经写入值进入。
+5. **污染形态＝环 recent 窗 NaN**：张量级（p6k，层 8–23 × 6 rep）：recent 窗列段 [128,1024) 变 NaN，prefix 段 [0,128) 始终正确；NaN 计数每代恒增 **1,310,720 元素/rep**（rep2 1.09M → rep5 5.02M，等差）＝**跨代环残留累积**（与 2026-10-17 r218-cross-generation-ring-staleness 的旧怀疑吻合）。
+6. **环内容本就逐代合法不同**（blocking 亦然：ring_k 每 rep 不同、rk_pre/q 相同），async 前几 rep 与 blocking 的逐 rep 哈希**完全一致**，从首个坏 rep 起才分岔。
+7. **修复候选两枚均不治**（3.6 表 p6i/p6j）→ 未取得可合入最小修复，**P6.e 保持 OPEN**；capfix 叠加复验按任务仅在取得修复后执行，故未跑。
+8. **未证实（OPEN）**：NaN 的**种子**来源（候选：外部核/工作区越界写命中环分配；环读侧 slide 复制已污染内存放大）——两候选均未闭合；**不归因 CANN**；不以失败率差异断言独立边数。侧流检查：树内 side-stream 仅出现在默认关闭的 warmup/capture 协议块（middle_exec.py:766/1696/2087，两端 wait_stream 配对）。
+
+**最小复现包（就绪）**：容器 `r218-main-verify`（镜像=nightly，树=`81295d899`）+ `/tmp/x1080x1_req.json` + `flock … async_diag.sh <tag> int2exp`（REPS=12）×（async vs `ASCEND_LAUNCH_BLOCKING=1`）；证据 `/tmp/r218_p6_host/{p6a_mdiag_async,p6b_mdiag_blk,p6g_krv_async,p6h_krv_blk,p6k_row_async}`（jsonl 哈希流 + 96 个环行张量）+ 分析脚本 `p6_mdiag_diff.py`；复现率 5–12/12（async），0/12（blocking）。
+
 ---
 
 ## 4. 任务 4 — 2.00× 容量对账（可复算）
@@ -367,3 +396,25 @@ flock /tmp/r218_npu7.lock -c \
    产品结论保持 OPEN，待默认异步关闭后正式姿态复跑（§4.4）。
 3. **设备**：NPU 7 现空闲、锁已释放；本轮主 Agent 仅用 04:28–04:32Z 一段补跑，不触碰其他卡/容器。
 4. **对外口径**：采纳 §5 与 §7.4——默认异步 **OPEN**，blocking 仅作时序判别，不归因 CANN，不标生产可用。
+
+## 9. 主 Agent 复核·第 3 波（2026-10-24 15:2xZ，对 A 设备轮与 P2/P3 交付）
+
+复核方式同 §8：独立重算/重载原始数据，不采信自述。
+
+| 复核项 | 结果 |
+|---|---|
+| §3.5 撤回依据 | 源级核对 `middle_candidate.py`：`:81-82` 进 C++ 准备分支条件、`:542/:504/:530/:563` 三个 launch 入口与报告一致。撤回成立。 |
+| p6 证据清点 | `/tmp/r218_p6_host` 106 文件/445MB；p6k 96 个环行张量（r00–r05 × l08–l23）；配对腿 jsonl 齐。 |
+| 写侧无罪（独立重算） | 主 Agent 用独立脚本按 mid 重置切 12 rep×828 记录：**src_k/src_v/src_ks/curblk_k 在全部 12 rep、全部 828 记录与 blocking 逐哈希一致**（含 8 个输出坏 rep）——「存进去就错」否定被二次证实，这是本轮最重的独立确认。 |
+| NaN 形态（独立重载） | 直接 `torch.load` p6k 张量：r02_l14 NaN 行 963–1023（61 行/62,464 元素）、r03_l08 883–1023（141 行/144,384）、r05_l23（319,488）；**prefix 行 [0,128) 全部零 NaN**；hk/hv 同数。recent 窗限定＋单调增长证实；×~18 层与 §3.6 结论 5 的 1.09M→5.02M 量级相符。 |
+| p6a 口径辨析 | `p6a_mdiag_async.analysis.txt`＝`total=12 bad=8`（1 个轻度 fox + 7 个 `!!!!`），blocking 0/12——**8/12 为输出级判据，成立**。⚠注意：朴素 ring_k/ring_v 全张量哈希对比会得 11/12 分歧（rep2–4 有散布性分歧但输出正确；环内容含槽位布局敏感区，良性漂移会虚增分歧数）。§3.6 结论 1「前 4 rep 全部 828×2 条完全一致」在朴素哈希口径下**仅 rep1（首个）完全一致**——该句按输出级/精细对齐口径理解，引用时以本条为准；不影响结论 2–8（写侧无罪、首分歧=环、NaN 跨代累积均被独立重算证实）。 |
+| 容器 pristine | 容器 `/workspace/oscar-vllm-ascend` HEAD=`81295d899`、`middle_exec.py` md5=`9ea86ce17611`、tracked 无改动；NPU 7 `proc-mem` 无进程、HBM 3455MB 基线（窗口结束后短时 60GB 占用为外部容器负载，非本会话，未触碰）。 |
+| P2/P3 fork 产物 | GitHub API 复核 prep-unit-06=`048e14aa3`、19=`d6eaad09c`、21=`db15c9224`、22=`eab326066` 与 A 报告逐项一致（其余 11 个未逐项复验，方法同 §8 已验证）。 |
+| P4 对外交互 | #19577 依赖评审一次性询问在（2026-10-24T12:48:52Z 评论）；CANN #6553 open、2 评论、assignee 在，无本会话越权操作。 |
+
+### 决策与遗留（第 3 波）
+
+1. **MAIN_SERVICE_VERIFY §6.2 替换文本已由主 Agent 应用**（更正撤回＋新定位＋口径降级）；r5 包内该文件仍是 05:40 版，包 README 已声明以本文件＋PR_ADVANCE §3.5/§3.6 为准，**不重打包**（r5 已发布并校验；下一版包再同步）。
+2. 异步缺陷保持 OPEN：NaN 种子来源两个候选（外部核/工作区越界写 vs 环读侧放大）均未闭合；下一轮建议从环分配邻接关系＋中层 op 工作区越界审计入手（A 建议，主 Agent 采纳）。
+3. p6 纯 torch 参考对 MIDCAP2 实操作数的正式跑未做（窗口预算），工具 `p6_compare.py` 就绪——遗留项，非阻塞。
+4. capfix 维持独立分支未合入，产品结论 OPEN 不变。

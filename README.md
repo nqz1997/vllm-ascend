@@ -85,3 +85,19 @@ cd r5/r218_perf_attr_20261024r5 && sha256sum -c SHA256SUMS    # 包内 156 项
 （05:40 版；§6.2 替换文本未并入，以 `PR_ADVANCE_20261024.md` §3.5 为准）。
 
 本页写作时间 2026-10-24；不修改任何已有数值。
+
+## 6. 第 4 波增量（2026-10-24 晚）
+
+- **P6 main 异步定位证据**：`r218_p6_async_evidence_20261024.tar.gz`（31MB，
+  sha256 `97a1c5ec328c7756ecbfeb40b9a525bf62ded0be05002a51ed9eacac54e555e2`）＝
+  关键张量子集（8 个环行 .pt：NaN 增长序列 r00→r05 多层）＋async/blocking 哈希流 jsonl＋
+  最小复现三件套（async_diag.sh/p6_compare.py/x1080x1_req.json）＋每腿 analysis 权威判据＋
+  **全量 141 文件 SHA256SUMS**（全量 445MB 原件在交付盘
+  `acceptance/report_eval/p6_async_evidence/raw/`，本包为关键子集）。
+  结论摘要与表述边界见包内 README；完整定位记录 `PR_ADVANCE_20261024.md` §3.5/§3.6/§9
+  （本分支版本已含）。**main 诊断与冻结组合服务结果分账，不混引。**
+- `MAIN_SERVICE_VERIFY_20261024.md` 更新：§6.2 替换文本已应用（pymid 撤回＋新定位＋口径降级），
+  替代 r5 包内 05:40 版。
+- ⚠ **进行中的更正（r6 待发）**：`PERF_ATTRIBUTION_ADDENDUM_20261024.md` §10 的
+  "host gap 300.66/60.79"、"步差各半"、"NOMIDE 被 host 遮蔽"、"12.7×"为跨测量条件混合量，
+  第 4 波正在撤回/降级重制；引用性能 profiling 数字请以 r6 版为准，r5 相关表述勿再引用。
