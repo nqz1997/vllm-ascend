@@ -12,7 +12,7 @@
 
 | 文件 | 大小 | SHA256 | 说明 |
 |---|---:|---|---|
-| `r218_perf_attribution_20261024r2.tar.gz` | 665,486 B | `edbf998eef9787066377ba010c27ffd292a6e0b306b57474ccb3a28f7089ec00` | **当前最新包**：109 文件；20261024 全部 ＋ `PERF_ATTRIBUTION_ADDENDUM_20261024.md` ＋ 两张新 CSV ＋ 生成脚本 ＋ 包内 README |
+| `r218_perf_attribution_20261024r2.tar.gz` | 665,581 B | `edbf998eef9787066377ba010c27ffd292a6e0b306b57474ccb3a28f7089ec00` | **当前最新包**：109 文件；20261024 全部 ＋ `PERF_ATTRIBUTION_ADDENDUM_20261024.md` ＋ 两张新 CSV ＋ 生成脚本 ＋ 包内 README |
 | `r218_perf_attribution_20261024r2.tar.gz.sha256` | 106 B | — | 上述包摘要（包内不内嵌自身 sha） |
 | `PERF_ATTRIBUTION_ADDENDUM_20261024.md` | 20 KB | — | 补充正文（与 r2 包内同一文件）：步级二次分析、时间分解、已证实/推测/未知、版本映射 |
 | `r218_perf_attribution_20261024.tar.gz` | 644,624 B | `bde8f9e053056f101240b4b991606beeb9477cba21dcade982c0a61503618ba1` | 首版（**SUPERSEDED by r2，保留不删**）：104 文件；含 `SHA256SUMS` 逐文件自校验 |
