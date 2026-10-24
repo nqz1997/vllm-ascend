@@ -161,18 +161,19 @@
 - **扩展构建**：`pip install -e . --no-build-isolation --no-deps` → EXIT 0，
   `vllm_ascend_C.cpython-312-aarch64-linux-gnu.so` 产出；`import vllm` 成功。
 - **隔离 UT**：`--noconftest tests/ut/oscar/test_int2_*.py` → 15 文件 / 98 passed；
-  6 文件运行时适配提交 `18d56c698` 后复跑仍 98 passed。
+  测试适配提交 `81295d899` 后 **135 passed**。
 - **BF16 冒烟**：同容器同参数启动，KV cache 153,216 tokens；greedy 输出正确。
 - **INT2 服务**：vendor 链 = `oscar_r144_v133c_grp + R133V + R116V + R106V`，候选内核
   `.o` md5 `c8a8d47a…`（交付冻结门），launcher 扩展 `r113.orch.v9+r145v3`；
-  KV cache 306,560 tokens（同 GMU 0.60 下 BF16 的 2.00×）。
+  KV cache 306,432 tokens（同 GMU 0.60 下 BF16 的 2.0000×）。
   **`ASCEND_LAUNCH_BLOCKING=1` 下 41/41 请求无损坏**（单请求/批量 2-8/ragged/短 middle/
-  长度截止/前缀复用）；默认异步发射下 **18/24 损坏**，与 2026-10-20 A1 判定的
-  CANN aclnn 发射层竞态同签名（0/50 vs 7/49），不归因于 INT2 算术。
-- **结论口径**：main 服务为 **BLOCKED（环境竞态）**，不能标生产可用；不得引用交付树
-  精度/性能数字。完整记录见
-  `acceptance/report_eval/MAIN_SERVICE_VERIFY_20261024.md`。
-- 运行时适配提交：`oscar-int2/m-port-full-ut` @ **`18d56c698`**（`268b8ff16` 之上 6 文件）；
+  长度截止/前缀复用）；默认异步发射下 **18/24 损坏**。后续二分（BF16 同电池 0/24、
+  无 INT2 中层 0/6、Python 中层 11/12、B=1 1080 tok 最小复现 5/12 vs blocking 0/12）
+  定位到 **INT2 中层读路径**；blocking 仅证明时序相关，**CANN 归因已撤回**。
+- **结论口径**：main 服务为 **OPEN（默认异步正确性未关闭）**，不能标生产可用；不得引用
+  交付树精度/性能数字。完整记录见
+  `acceptance/report_eval/MAIN_SERVICE_VERIFY_20261024.md` §6。
+- 运行时适配提交：`oscar-int2/m-port-full-ut` @ **`81295d899`**（`268b8ff16`+`18d56c698` 之后加测试适配）；
   **已推 GitHub fork 并核对远端 blob 一致**（GitCode 归档仓仍无写凭据，与本分支无关）；
   导出补丁 `R218_UPSTREAM_WORK/main_port_runtime_fixes.patch`
   （sha256 `c227321dc4a7ff10d55d5daad5f9d470971c4ab8fd3a59c20cecaa29b6481da6`）。

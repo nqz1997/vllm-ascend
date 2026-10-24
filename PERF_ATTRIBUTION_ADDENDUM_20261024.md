@@ -3,7 +3,9 @@
 > **版本边界（先读）**：本页所有性能数字只属于**已测交付树组合**——框架 v4 PR-22 tip `983fbac1`
 > （树 ≡ 已测 `ov_restore` overlay；`[R218ID] attention_v1` sha `85051bbd2e74c117`）＋**冻结内核**
 > `md5=c8a8d47a63be7ad7`（vendor `oscar_r144_v133c_grp`）＋launcher `int2_lse_fast_r152`＋**eager**。
-> main 移植版（`m-port-full-ut @ 18d56c698`）**BLOCKED 于 CANN aclnn 发射层竞态**，其任何数字不得引用本页。
+> main 移植版（`m-port-full-ut @ 81295d899`）**默认异步正确性 OPEN**（INT2 中层读路径；
+> blocking 仅作时序判别，CANN 归因已撤回，见 `MAIN_SERVICE_VERIFY_20261024.md` §6），
+> 其任何数字不得引用本页。
 >
 > 本页是 `R218_PERF_ATTRIBUTION_20261023.md` 的**补充**，不重写主文、不改动已有数值。新增内容只有：
 > ① 证据包上 GitHub 的取回与校验；② 用**已有** `perq.json`/`serve.log` 做的步级二次分析；
@@ -317,10 +319,10 @@ cd r218_pack/r218_perf_attr_20261024 && sha256sum -c SHA256SUMS         # -> 103
 
 | 包版本 | 代码身份 | 运行时 / 姿态 | 证据文件 | 适用口径 |
 |---|---|---|---|---|
-| **20261024r2**（本页包含在该包中） | 同下 | 同下 | 20261024 全部 ＋ `PERF_ATTRIBUTION_ADDENDUM_20261024.md` ＋ 两张 CSV ＋ `r218_addendum_tables.py` | 交付树；main 不适用 |
+| **20261024r3**（本页包含在该包中） | 同下 | 同下 | 20261024r2 全部 ＋ main 异步定位更正（`MAIN_SERVICE_VERIFY` §6、本页版本边界） | 交付树；main 不适用 |
 | **20261024** | 交付树 v4 PR-22 tip `983fbac1`（≡ `ov_restore`）；attn `85051bbd2e74c117`；kernel md5 `c8a8d47a63be7ad7`；launcher r152 | `oscar-r103-runner`，CANN 9.0.0 / vLLM 0.22.1，Qwen3-8B，dev7；**eager**；block 128、MNBT 8192、greedy、64 tok | 四腿＋复跑、2K/16K 消融、账本 v2、吞吐对照、一页结论、main 验证记录 | 交付树精度/吞吐/容量/归因 |
 | 20261023（SUPERSEDED） | 同上 | 同上 | 同上（缺 `MAIN_SERVICE_VERIFY_20261024.md`） | 同上 |
-| **main 移植（单列，BLOCKED）** | `nqz1997/vllm-ascend` `oscar-int2/m-port-full-ut` @ `18d56c698`（main 基 `dde85f6b8`）；attn `704cf4e0c3a7fa5a`；同一冻结 kernel md5 | 上游 nightly `nightly-ci-main-a2-openeuler`（digest `8eaf0b4f…`），CANN 9.2.0 / torch 2.10.0+cpu / torch_npu 2.10.0.post7 / vLLM 0.31.0 @ `db9527a4`；NPU 7 | `MAIN_SERVICE_VERIFY_20261024.md`；补丁 `main_port_runtime_fixes.patch` sha256 `c227321d…` | **仅**构建/import/BF16 冒烟/隔离 UT 98 passed＋串行化发射 41/41；默认异步 18/24 损坏＝CANN 发射层竞态；**不标生产可用，不引用交付树数字** |
+| **main 移植（单列，OPEN）** | `nqz1997/vllm-ascend` `oscar-int2/m-port-full-ut` @ `81295d899`（main 基 `dde85f6b8`）；attn `704cf4e0c3a7fa5a`；同一冻结 kernel md5 | 上游 nightly `nightly-ci-main-a2-openeuler`（digest `8eaf0b4f…`），CANN 9.2.0 / torch 2.10.0+cpu / torch_npu 2.10.0.post7 / vLLM 0.31.0 @ `db9527a4`；NPU 7 | `MAIN_SERVICE_VERIFY_20261024.md`；补丁 `main_port_runtime_fixes.patch` sha256 `c227321d…` | **仅**构建/import/BF16 冒烟/隔离 UT 135 passed（适配后）＋串行化发射 41/41；默认异步 18/24 损坏，最小复现 B=1 1080 tok 5/12 vs blocking 0/12，定位 INT2 中层读路径、**OPEN**；不标生产可用，不引用交付树数字 |
 
 ---
 
