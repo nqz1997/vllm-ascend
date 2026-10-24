@@ -646,6 +646,17 @@ class NPUWorker(WorkerBase):
         same free-memory budget. With INT2's packed page the pool can consume
         the whole budget, so the ring must be reserved up front instead of
         being absorbed by the dense-accounting slack.
+
+        Fail-safe contract (R218 wave-4 T4): this function must never return a
+        smaller number than the ring the backend will actually allocate. If
+        the exact computation fails, fall back to a CONSERVATIVE UPPER BOUND
+        (HPFIT only shrinks ``ms`` and R199_PRREAD only removes the +4 margin,
+        so the bound keeps both at their maximum; the window knobs are read
+        from the same envs with the same defaults as
+        ``vllm_ascend/oscar/config.py``). If even the bound is not derivable
+        (hf geometry / scheduler width unreadable), raise instead of returning
+        0: a silent zero reservation lets the packed pool consume the whole
+        budget and the ring then OOMs at startup.
         """
         try:
             from vllm.utils.torch_utils import get_dtype_size
@@ -668,13 +679,50 @@ class NPUWorker(WorkerBase):
             return layers * 2 * ms * mhp * nkv * head_dim * get_dtype_size(
                 self.model_config.dtype
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "int2: could not compute the HP-ring reservation; "
-                "KV budget left unscaled",
+                "int2: exact HP-ring reservation failed (%r); "
+                "using the conservative upper bound",
+                exc,
                 exc_info=True,
             )
-            return 0
+            return self._oscar_int2_hp_ring_bytes_conservative(exc)
+
+    def _oscar_int2_hp_ring_bytes_conservative(self, exc: Exception) -> int:
+        """Conservative upper bound for the HP-ring reservation (see above).
+
+        Returns a value >= what the backend allocates under every env posture:
+        ``ms`` keeps the +1 padding row and ignores the HPFIT shrink (HPFIT
+        only ever caps ``ms`` downward); ``mhp`` always keeps the 4-token
+        margin (R199_PRREAD only ever removes it). Fail-closed when the hf
+        geometry or the scheduler width cannot be read at all.
+        """
+        from vllm.utils.torch_utils import get_dtype_size
+
+        hf = getattr(self.model_config, "hf_text_config", None)
+        try:
+            layers = int(hf.num_hidden_layers)
+            heads = int(hf.num_attention_heads)
+            hidden = int(hf.hidden_size)
+            nkv = int(getattr(hf, "num_key_value_heads", heads))
+            head_dim = int(getattr(hf, "head_dim", 0) or (hidden // heads))
+            dsize = get_dtype_size(self.model_config.dtype)
+            mns = int(self.vllm_config.scheduler_config.max_num_seqs)
+            ms = max(int(os.environ.get("R109_TT_MAX_SEQS", "4") or 4), 4, mns + 1)
+        except Exception as exc2:
+            raise RuntimeError(
+                "int2_per_token_head: the HP-ring reservation could not be "
+                f"computed (exact path: {exc!r}; conservative path: {exc2!r}). "
+                "Refusing to size the KV pool without the reservation: the "
+                "BF16 ring is allocated from the same budget and the packed "
+                "INT2 pool would leave it no headroom (fail-closed; was a "
+                "silent 0). Fix the model/config introspection or serve a "
+                "non-INT2 kv-cache dtype."
+            ) from exc2
+        prefix = int(os.environ.get("R109_TT_PREFIX", "128") or 128)
+        recent = int(os.environ.get("R109_TT_RECENT", "896") or 896)
+        mhp = prefix + recent + 4
+        return layers * 2 * ms * mhp * nkv * head_dim * dsize
 
     @torch.inference_mode()
     def determine_available_memory(self) -> int:

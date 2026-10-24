@@ -106,3 +106,73 @@ class TestHighPrecisionRingReservation:
             NPUWorker._oscar_int2_hp_ring_bytes(_worker())
             == 36 * 2 * 40 * 1028 * 8 * 128 * 2
         )
+
+    # ---- R218 wave-4 T4: fail-safe exception path ----
+    # The reservation must never silently return 0 (the old fail-open): the
+    # packed INT2 pool would consume the whole budget and the BF16 ring would
+    # then OOM at startup. Exact-path failures fall back to a conservative
+    # UPPER bound; underivable geometry fails closed with RuntimeError.
+
+    def test_exact_failure_falls_back_to_upper_bound(self, monkeypatch):
+        import vllm_ascend.oscar.config as _ocfg
+
+        def _boom():
+            raise RuntimeError("oscar config introspection broken")
+
+        monkeypatch.setattr(_ocfg, "get_oscar_config", _boom)
+        monkeypatch.setenv("R109_TT_MAX_SEQS", "32")
+        monkeypatch.delenv("R205_HPFIT", raising=False)
+        monkeypatch.setenv("R199_PRREAD", "1")   # exact path would drop +4
+        # Conservative bound keeps the +4 margin even under PRREAD.
+        got = NPUWorker._oscar_int2_hp_ring_bytes(_worker())
+        assert got == 36 * 2 * 33 * 1028 * 8 * 128 * 2
+        # and it never under-reserves vs the (unreachable) exact value
+        assert got >= 36 * 2 * 33 * 1024 * 8 * 128 * 2
+
+    def test_fallback_ignores_the_hpfit_shrink(self, monkeypatch):
+        import vllm_ascend.oscar.config as _ocfg
+
+        monkeypatch.setattr(
+            _ocfg, "get_oscar_config", lambda: (_ for _ in ()).throw(
+                RuntimeError("boom"))
+        )
+        monkeypatch.setenv("R109_TT_MAX_SEQS", "96")
+        monkeypatch.setenv("R205_HPFIT", "1")
+        monkeypatch.setenv("R205_HPFIT_MARGIN", "8")
+        monkeypatch.delenv("R199_PRREAD", raising=False)
+        # HPFIT caps ms to 40 on the exact path; the bound keeps ms=96
+        # (>= max_num_seqs + 1 = 33) so it can only over-reserve.
+        assert (
+            NPUWorker._oscar_int2_hp_ring_bytes(_worker())
+            == 36 * 2 * 96 * 1028 * 8 * 128 * 2
+        )
+
+    def test_fallback_reads_the_window_envs(self, monkeypatch):
+        import vllm_ascend.oscar.config as _ocfg
+
+        monkeypatch.setattr(
+            _ocfg, "get_oscar_config", lambda: (_ for _ in ()).throw(
+                RuntimeError("boom"))
+        )
+        monkeypatch.setenv("R109_TT_MAX_SEQS", "32")
+        monkeypatch.setenv("R109_TT_PREFIX", "256")
+        monkeypatch.delenv("R205_HPFIT", raising=False)
+        monkeypatch.delenv("R199_PRREAD", raising=False)
+        assert (
+            NPUWorker._oscar_int2_hp_ring_bytes(_worker())
+            == 36 * 2 * 33 * (256 + 896 + 4) * 8 * 128 * 2
+        )
+
+    def test_underivable_geometry_fails_closed(self, monkeypatch):
+        import pytest
+
+        monkeypatch.setenv("R109_TT_MAX_SEQS", "32")
+        broken = SimpleNamespace(
+            model_config=SimpleNamespace(hf_text_config=None,
+                                         dtype=torch.bfloat16),
+            vllm_config=SimpleNamespace(
+                scheduler_config=SimpleNamespace(max_num_seqs=32)
+            ),
+        )
+        with pytest.raises(RuntimeError, match="fail-closed"):
+            NPUWorker._oscar_int2_hp_ring_bytes(broken)
