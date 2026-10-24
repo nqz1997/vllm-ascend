@@ -95,3 +95,12 @@ decode span 正常（37.64 s），但 prefill+排队 66.75 s（复跑 11.31 s）
 3. "≥35.10 s（≥90%）没有门控覆盖"的下界措辞 → "未被任何已测门控覆盖的差分观察"
    （非加性消融之和不构成下界）。
    详见 `PERF_ATTRIBUTION_ADDENDUM_20261024.md` §1.1/§1.2/§1.3/§10。
+4. （第 4 波更正，2026-10-24 深夜，append-only）**上条第 2 点的归因表述撤回/降级**：
+   "host 间隙 300.7/60.8 ms""步差≈Δkernel 237.4＋Δhost 239.9 各半""NOMIDE 收益被 host
+   遮蔽"均为**跨测量条件的混合量或未证归因**（profiler-OFF 墙钟 − profiler-ON kernel
+   并集不是步构成），已撤回；"5.81 ms＝直调 12.7×"降级为**服务采样 vs 直调两场景的
+   观测比**（两场景布局/tiling/采样条件不同，成因未查）。同条件下成立的量：
+   OFF execute_model 墙钟差 **+477.31 ms/步**（n=43/43）、ON kernel 并集差 **+237.44**
+   （12 步窗口）、探针开销 **+197.67/+21.24 ms/步**、ON 窗口设备空闲 65.3%/74.8%。
+   详见 `PERF_ATTRIBUTION_ADDENDUM_20261024.md` §10.5 与
+   `figs/PERF_PROFILING_20261024_SUPERSEDED_MAP.md`。

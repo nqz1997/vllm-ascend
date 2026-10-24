@@ -240,6 +240,12 @@ prefill 与 decode **同步变差**是重要约束：它把可疑面从“decode
 > 本节为**新增测量**，与前文既有数字分列：前文所有数值一律未改。本节只覆盖
 > **2K/C32 一个工作点**的 decode 稳态步，不外推 16K。
 
+> **⚠ 更正（2026-10-24 深夜，第 4 波 sub-B）**：本节 §10.2–§10.4 原文中把
+> **profiler-OFF 步墙钟**与 **profiler-ON kernel 并集**混在一个等式里（"host/发射间隙 =
+> 墙钟−kernel 并集"），并由此得出"步差≈Δkernel+Δhost 各半"“NOMIDE 被 host 遮蔽”等
+> 结论——这些是**跨测量条件的混合量**，不是直接测得的步构成。按裁定全部撤回/降级，
+> 更正后口径见 **§10.5**（原文按 append-only 原则原样保留，仅加指针）。
+
 ### 10.1 协议与身份（bg6 两条腿）
 
 - 腿：`runs/bg6_prof_int2_2k_c32`（mode B）与 `runs/bg6_prof_bf16_2k_c32`（mode N），
@@ -273,6 +279,8 @@ prefill 与 decode **同步变差**是重要约束：它把可疑面从“decode
 | host/发射间隙（墙钟−kernel 并集） | **300.66 ms** | **60.79 ms** | **239.87 ms** |
 | 图：`figs/PERF_PROFILING_STEP_20261024.png`；逐 op：`figs/PERF_PROFILING_20261024.csv` | | | |
 
+> ⚠ 本段及上表"host/发射间隙"行为跨条件混合量，已于第 4 波撤回（§10.5）；原文如下保留。
+
 两个模式在 eager 下都**同时**有可观的 kernel 时间与 host 间隙；2K 的步差
 （纯 decode 口径 477.31 ms）**近似对半**来自 Δkernel（+237.4）与 Δhost 间隙（+239.9）。
 注意：纯 decode 步墙钟（567/89.7 ms）与前文 span 口径步时（603/119 ms）不同——
@@ -289,10 +297,10 @@ span 口径含 chunked-prefill 混排步，两者分列、不可互换。
 | aclnnMuls…Muls | 7.55（2.8%） | — | |
 | 其余（RmsNorm/SwiGlu/rope/拷贝类/未映射，逐 op 见 CSV） | ~13（~4.9%） | ~3.0（~10%） | 名称→类别的映射为启发式，逐 op 保留原名 |
 
-**读法（非加性提醒）**：kernel 并集 + host 间隙按构造 = 步墙钟（同一步内互补）；
+**读法（非加性提醒）**（⚠"kernel 并集+host 间隙=步墙钟"的互补性说法已撤回，见 §10.5）：
 kernel 内部各类为**命名求和**，多流重叠在本腿可忽略（并集 266.39 ≈ 求和 267.11）。
 
-### 10.4 对 §3/§4 悬案的直接回答与新增未知
+### 10.4 对 §3/§4 悬案的直接回答与新增未知（⚠ 第 1/2 条的因果表述已降级，见 §10.5）
 
 1. **§4.3.2 的“直调 vs 服务内数量级矛盾”在 2K 定量闭合**：服务内单次 5.81 ms vs
    直调微基准 0.456 ms（**12.7×**）。差距本身已实测，但**成因未查**（block table 布局/
@@ -307,6 +315,77 @@ kernel 内部各类为**命名求和**，多流重叠在本腿可忽略（并集
    嵌套不可加，未作分解）；② 非 Oscar kernel 的类别归属（拷贝类 vs 计算 vs 未映射）
    只有启发式命名映射；③ INT2 每层多出的 matmul 调用（×2）来源；④ 16K 未采 trace，
    本节不外推。
+
+### 10.5 更正（2026-10-24 深夜，第 4 波 sub-B，本轮终版）：测量条件分列，撤回跨条件混合量
+
+> 裁定与更正依据：§10.2/§10.3/§10.4 原文把 **profiler-OFF** 的步墙钟与 **profiler-ON**
+> 的 kernel 并集放进同一个等式。r5 生成脚本 `make_prof_outputs.py`（旧行 :34/:35/:51/:152，
+> 备份于 `figs/_backup_20261024r5/`）以 `median(profiler-OFF 墙钟) − (profiler-ON kernel
+> union / 12)` 命名为 "host/launch gap"。两量来自**不同测量条件**（探针开销 INT2
+> +197.7 ms/步本身就是两条件差的量级），其差**不是直接测得的步构成**。以下四条撤回/降级。
+
+**撤回/降级清单（原文 → 新表述）**
+
+| # | 原文（r5） | 处置 | 新表述 |
+|---|---|---|---|
+| R1 | "host/发射间隙 INT2 300.66 / BF16 60.79 ms＝墙钟−kernel 并集"（§10.2 表行，及堆叠图） | **撤回为直接测量** | 该差是跨条件混合量。同条件下的正确量见下表：profiler-ON 窗口内设备空闲 INT2 502.1 / BF16 85.8 ms/步（含探针开销）；profiler-OFF 条件**无设备时间数据**，其"kernel 之外残差"不可得，只可中性记作"trace 未覆盖残差（条件混算，deprecated）" |
+| R2 | "步差≈Δkernel 237.4＋Δhost 239.9，近似对半"（§10.2 尾段、图注） | **撤回** | 唯一成立的分列：Δwall(OFF)=477.31（同条件）；Δkernel(ON)=237.44（同条件）。"各半"来自把两个不同条件的差强行相加；代数上 Δ"host"=Δwindow(ON)−Δunion(ON)−Δ探针−Δ未计时段——含"探针开销可加性"假设，非测量 |
+| R3 | "NOMIDE 只省 13 ms/步的原因＝host 间隙 300.7 ms 遮蔽 kernel 时间"（§10.4.2） | **降级为未证** | 撤回"遮蔽"这一已定论归因（无 NOMIDE 配对时间线/关键路径证据，且 R1 已撤）。保留事实：NOMIDE 差分 2K 24.25 ms/步（§4.1.3 实测）vs 中层核 ON 条件 209.25 ms/步；两者关系是**待解释的观测**，不是结论 |
+| R4 | "host 间隙 INT2 300.7 vs BF16 60.8（同 ctx 同 batch）⇒ 证伪'host 编排与 ctx 无关'"（§10.4.2） | **撤回推理** | 同 ctx 的 INT2/BF16 host 侧差不能证明 host 成本随 ctx 变化（两模式 host 链路不同：INT2 有 36 层×每层额外 carrier/cat/muls 发射）。§4.2.4 的证伪撤回，问题回到 OPEN |
+| R5 | "服务内单次 5.81 ms＝直调 0.456 ms 的 **12.7×**"（§10.4.1） | **降级为场景间观测比** | 两场景条件见下文"两场景条件对照"；12.7× 只是观测比，不构成"同一负载下服务放大 12.7×"的结论，成因未查 |
+
+**三分类呈现（本轮替换 §10.2 表；`figs/PERF_PROFILING_20261024.csv` measurement_condition 列）**
+
+| 条件 | 量 | INT2 | BF16 | n |
+|---|---|---:|---:|---|
+| ① profiler OFF | execute_model host 墙钟中位 [p25–p75] | **567.05** [563.17–571.55]（min 559.81/max 608.26） | **89.74** [88.86–91.12]（min 86.87/max 94.82） | 43/43 |
+| ① 同条件差 | Δwall(OFF) | **+477.31** | — | — |
+| ② profiler ON | execute_model 墙钟中位 | 764.72 [762.42–769.09] | 110.98 [110.65–114.11] | 12/12 |
+| ② profiler ON | 12 步窗口跨度/步（首 kernel 起→末 kernel 止） | 768.50 | 114.75 | 12/12 |
+| ② profiler ON | NPU kernel 并集/步 | **266.39** | **28.95** | 78,364/7,383 事件 |
+| ② profiler ON（新增） | 窗口内设备空闲/步（窗口−并集；含探针开销） | **502.12（65.3% 空闲）** | **85.81（74.8% 空闲）** | 12/12 |
+| ② 同条件差 | Δkernel(ON)、Δwindow(ON) | **+237.44**、+653.75 | — | — |
+| ③ 观测开销 | median(ON)−median(OFF)（同腿） | **+197.67（+34.9%）** | **+21.24（+23.7%）** | 12 vs 43 |
+| deprecated | r5 "host gap"（条件混算） | ~~300.66~~ | ~~60.79~~ | — |
+
+读法纪律：①与②不可互减/相加构成"步构成"；②内窗口空闲是 **ON 条件**观测（含探针，
+且窗口含未计时段 sample_tokens/调度 ≈3.8 ms/步）；OFF 条件下设备占用**未测**。
+新图 `figs/PERF_PROFILING_STEP_20261024.png`（三面板分列，无堆叠构成）；
+r5 堆叠图与 78 行 CSV 备份于 `figs/_backup_20261024r5/`，逐项取代关系见
+`figs/PERF_PROFILING_20261024_SUPERSEDED_MAP.md`。
+
+**B2：execute_model 计时是否覆盖设备完成——不可判定为"覆盖"；"＝设备完成口径步时"的读法不成立**
+
+- 计时对象：钩子只包 `NPUModelRunner.execute_model`（`r218prof_hook.py`，
+  `orig = cls.execute_model`；prof_steps.jsonl 的 `ms`＝该调用的 host 墙钟）。
+- 代码路径（ov_restore overlay `vllm_ascend/worker/model_runner_v1.py`）：本 fork 为
+  两段式——`execute_model` 构造输入、发射 forward、存 `ExecuteModelState` 后
+  `return None`（尾注 "Now the batch has been launched…"）；**常规返回路径无无条件
+  `torch.npu.synchronize()`**（入口 `_sync_device` 仅在 profiling_chunk_config.
+  need_timing 分支；R166_PFSYNC/R169 诊断默认关）。采样在 `sample_tokens()`，
+  设备→主机同步落在其 `_bookkeeping_sync`（采样 id 的 D2H）——**在计时窗口之外**。
+- 因此：第 N 步设备收尾**确定不在**第 N 步的计时内；稳态步周期还含未计时段
+  （ON 条件实测 window−ON墙钟 ≈3.8 ms/步；OFF 条件未测）。
+- 计时内是否含"隐式等待前序设备工作"（发射队列背压）：**离线不可判定**（trace 无队列
+  深度记录）。所需证据形态：worker 级（execute_model+sample_tokens）墙钟、钩子内记录
+  stream/event 完成时间戳、或系统级时间线（msprof）。
+- 附：trace 窗口尾核查——最后一个 kernel 结束仅超出最后一个 cpu_op 结束 2.44 ms
+  （INT2）/1.02 ms（BF16），只证明 profiler stop 时设备已近排空，不能反证计时含同步。
+
+**两场景条件对照（R5 降级的依据；两者同一内核 md5 c8a8d47a63be7ad7）**
+
+| 维度 | 服务内 5.81 ms/次 | 直调 0.456 ms/次 |
+|---|---|---|
+| 测量方式 | torch_npu profiler ON，chrome trace kernel 事件时长（432 次统计：min 5.78/med 5.81/max 5.85） | host 计时，**sync-per-call**（含每次同步开销），`runs/bg_nogain/opbench_delivered.json`（2026-10-23 dev6） |
+| 负载形态 | 服务 decode 稳态：C=32、ctx≈2048（TT 帽 2K）、生产 paged block-table（R144 v133c grouped 路径、cap 32、GMU 0.75 池）、36 层×12 步与同层 cat/muls/matmul 交织 | 单算子微基准：B=32、S=1920、blocks=15 合成块表、空载邻居 |
+| 未记录/不可比 | tiling 选择是否与服务内一致、stride/块表分散度、并发流、L2/流水状态 | 同左；且 sync-per-call 使 host 值非纯设备时间 |
+
+**保留仍然成立的量**（本轮未动）：①类全部（OFF 墙钟分布，含同条件 Δ477.31）；
+②类 kernel 并集/op 表（注明 ON 条件）与新增窗口空闲；③探针开销；NOMIDE/slide2/
+SR/G 各门控差分（§4.1 原测值）；中层核 per-call 5.81（ON 条件）与 209.25 ms/步合计。
+
+**仍未知（如实）**：OFF 条件设备占用；ON 窗口空闲内部的 launch/API/等待切分
+（cpu_op 嵌套不可加）；12.7× 观测比的成因；16K 未采 trace。
 
 ---
 

@@ -99,6 +99,11 @@ cd r5/r218_perf_attr_20261024r5 && sha256sum -c SHA256SUMS    # 包内 156 项
   （本分支版本已含）。**main 诊断与冻结组合服务结果分账，不混引。**
 - `MAIN_SERVICE_VERIFY_20261024.md` 更新：§6.2 替换文本已应用（pymid 撤回＋新定位＋口径降级），
   替代 r5 包内 05:40 版。
-- ⚠ **进行中的更正（r6 待发）**：`PERF_ATTRIBUTION_ADDENDUM_20261024.md` §10 的
-  "host gap 300.66/60.79"、"步差各半"、"NOMIDE 被 host 遮蔽"、"12.7×"为跨测量条件混合量，
-  第 4 波正在撤回/降级重制；引用性能 profiling 数字请以 r6 版为准，r5 相关表述勿再引用。
+- **性能呈现更正包 r6（已发布）**：`r218_perf_attribution_20261024r6.tar.gz`（17MB，
+  sha256 `fb52b69d8b57e078dc2ac4addcfdf0beec6b5cfefef6518a4710c2a969e31f75`，163 文件）。
+  §10.2–10.4 的 host 间隙/各半/遮蔽表述由 **§10.5 取代**（跨测量条件混合量撤回为直接测量）；
+  同条件新量：ON 12 步窗口 768.50/114.75 ms/步、窗口设备空闲 65.3%/74.8%；CSV 93 行含
+  measurement_condition 列；堆叠图→三面板；12.7×→两场景观测比（条件对照 §10.5）；
+  execute_model 计时不保证覆盖设备完成（两段式 return None、钩子仅 host 墙钟）；
+  新旧对照 SUPERSEDED_MAP＋`_backup_20261024r5/`。**引用性能 profiling 数字以 r6 为准，
+  r5 表述勿再引用**（r5 及更早 SUPERSEDED 保留）。
