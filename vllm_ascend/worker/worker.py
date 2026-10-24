@@ -639,6 +639,43 @@ class NPUWorker(WorkerBase):
         num_blocks = plan.get_num_blocks(available_bytes)
         return num_blocks * sum(spec.page_size_bytes for spec in plan.logical_cache_spec.values())
 
+    def _oscar_int2_hp_ring_bytes(self) -> int:
+        """Bytes of the BF16 high-precision ring that lives outside the spec.
+
+        The three-tier ring is allocated after the paged KV pool but from the
+        same free-memory budget. With INT2's packed page the pool can consume
+        the whole budget, so the ring must be reserved up front instead of
+        being absorbed by the dense-accounting slack.
+        """
+        try:
+            from vllm.utils.torch_utils import get_dtype_size
+            from vllm_ascend.oscar.config import get_oscar_config
+
+            cfg = get_oscar_config()
+            hf = self.model_config.hf_text_config
+            layers = int(hf.num_hidden_layers)
+            nkv = int(getattr(hf, "num_key_value_heads", hf.num_attention_heads))
+            heads = int(hf.num_attention_heads)
+            hidden = int(hf.hidden_size)
+            head_dim = int(getattr(hf, "head_dim", 0) or (hidden // heads))
+            mns = int(self.vllm_config.scheduler_config.max_num_seqs)
+            ms = max(int(os.environ.get("R109_TT_MAX_SEQS", "4") or 4), 4, mns + 1)
+            if os.environ.get("R205_HPFIT", "0") == "1":
+                margin = int(os.environ.get("R205_HPFIT_MARGIN", "8") or 8)
+                ms = max(4, min(ms, mns + margin))
+            extra = 0 if os.environ.get("R199_PRREAD", "0") == "1" else 4
+            mhp = cfg.prefix_window + cfg.recent_window + extra
+            return layers * 2 * ms * mhp * nkv * head_dim * get_dtype_size(
+                self.model_config.dtype
+            )
+        except Exception:
+            logger.warning(
+                "int2: could not compute the HP-ring reservation; "
+                "KV budget left unscaled",
+                exc_info=True,
+            )
+            return 0
+
     @torch.inference_mode()
     def determine_available_memory(self) -> int:
         """Profiles the peak memory usage of the model to determine how much
@@ -717,6 +754,16 @@ class NPUWorker(WorkerBase):
         self.available_kv_cache_memory_bytes = self._scale_kv_cache_memory_for_multi_group(
             self.available_kv_cache_memory_bytes,
         )
+        if self.vllm_config.cache_config.cache_dtype == "int2_per_token_head":
+            _hp_bytes = self._oscar_int2_hp_ring_bytes()
+            if _hp_bytes:
+                self.available_kv_cache_memory_bytes = max(
+                    0, self.available_kv_cache_memory_bytes - _hp_bytes
+                )
+                logger.info(
+                    "INT2: reserving %.2f GiB for the BF16 HP ring",
+                    GiB(_hp_bytes),
+                )
         # R150 P3: optional KV-pool BYTES cap (default OFF). INT2 pools reserve
         # 4x tokens per byte vs BF16; vLLM fills all available HBM with blocks
         # the tested (B, MML) can never use, squeezing prefill workspace.

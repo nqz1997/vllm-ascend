@@ -7019,6 +7019,40 @@ class NPUModelRunner(GPUModelRunner):
             for provider in device_metadata_providers.values():
                 provider.enable_device_metadata()
 
+    def _maybe_pack_int2_spec(self, spec: KVCacheSpec) -> KVCacheSpec:
+        """Return the physically-packed KV spec for OSCAR True-INT2 layers.
+
+        INT2 stores four 2-bit values per byte and keeps its per-token-head
+        scale/offset lanes next to the payload, so the dense K/V byte count
+        (``head_size + head_size_v``) overstates the real page by ~3.6x.
+        vLLM publishes the packed size through ``state_content_bytes``;
+        without this override the engine reserves ~2x BF16 bytes while the
+        backend allocates a sub-BF16 payload.
+        """
+        from vllm.v1.kv_cache_interface import FullAttentionSpec
+
+        if (
+            self.vllm_config.cache_config.cache_dtype != "int2_per_token_head"
+            or type(spec) is not FullAttentionSpec
+        ):
+            return spec
+        head_size = int(spec.head_size)
+        head_size_v = int(spec.head_size_v or head_size)
+        if head_size % 4 or head_size_v % 4:
+            # Fail closed: the backend packs four 2-bit lanes per byte;
+            # head sizes that do not divide must keep the dense spec.
+            logger.warning(
+                "int2: head sizes (%d, %d) are not 4-byte divisible; "
+                "keeping the dense KV spec",
+                head_size,
+                head_size_v,
+            )
+            return spec
+        content = (head_size + head_size_v) // 4 + 4 * get_dtype_size(
+            self.vllm_config.model_config.dtype
+        )
+        return replace(spec, state_content_bytes=content)
+
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """
         Generates the KVCacheSpec by parsing the kv cache format from each
@@ -7061,6 +7095,7 @@ class NPUModelRunner(GPUModelRunner):
                 if spec := attn_module.get_kv_cache_spec(self.vllm_config):
                     if self._is_c8_mxfp_kv_cache(spec):
                         spec = mxfp_cache_spec(spec)
+                    spec = self._maybe_pack_int2_spec(spec)
                     kv_cache_spec[layer_name] = spec
                     attn_layer_names.add(layer_name)
             elif isinstance(attn_module, MLAAttention):
