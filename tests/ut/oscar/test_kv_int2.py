@@ -86,41 +86,63 @@ class TestScaleWeightLoader:
 
 
 class TestModelSlimInt2ScaleMapping:
-    """PR-21 wiring: get_cache_scale must map INT2 scales (symmetric, no
-    offsets) and keep the C8 mapping intact."""
+    """PR-21 wiring (main API): the INT2 recipe contributes symmetric KV
+    scale suffix mappings (no offsets) and keeps the C8 mapping intact.
 
-    def _scale(self, kv_type, name):
+    main replaced the release-line static ``get_cache_scale(kv_type, name)``
+    predicate with ``get_cache_scale_mapper() -> WeightsMapper``; a name that
+    matches no suffix is passed through unchanged instead of being dropped.
+    These tests pin the mapper that the service actually installs."""
+
+    @staticmethod
+    def _mapper(kv_type):
         from types import SimpleNamespace
 
-        from vllm_ascend.quantization import modelslim_config as msc
+        from vllm_ascend.quantization.configs import modelslim_config as msc
 
-        return msc.AscendModelSlimConfig.get_cache_scale(
-            SimpleNamespace(quant_description={"kv_cache_type": kv_type}), name
+        ns = SimpleNamespace(
+            quant_description={"kv_cache_type": kv_type},
+            _has_mxfp_c8_recipe=False,
+            enable_mxfp_c8_quant=False,
+            enable_fa_quant=False,
+            enable_c8_quant=kv_type == "C8",
+            enable_int2_quant=kv_type == "INT2",
+            enable_indexer_quant=False,
         )
+        return msc.AscendModelSlimConfig.get_cache_scale_mapper(ns)
 
-    def test_int2_scales_map_and_offsets_are_none(self):
+    def test_int2_scales_map(self):
+        m = self._mapper("INT2")
         assert (
-            self._scale("INT2", "model.layers.3.self_attn.k_proj.kv_cache_scale")
+            m.map_name("model.layers.3.self_attn.k_proj.kv_cache_scale")
             == "model.layers.3.self_attn.attn.k_cache_scale"
         )
         assert (
-            self._scale("INT2", "model.layers.3.self_attn.v_proj.kv_cache_scale")
+            m.map_name("model.layers.3.self_attn.v_proj.kv_cache_scale")
             == "model.layers.3.self_attn.attn.v_cache_scale"
         )
-        assert self._scale("INT2", "model.layers.3.self_attn.k_proj.kv_cache_offset") is None
+
+    def test_int2_offsets_not_mapped(self):
+        # INT2 is symmetric: main's mapper has no offset entry, so the name
+        # passes through unchanged (the release-line predicate returned None).
+        name = "model.layers.3.self_attn.k_proj.kv_cache_offset"
+        assert self._mapper("INT2").map_name(name) == name
 
     def test_c8_mapping_unchanged(self):
+        m = self._mapper("C8")
         for suffix, dst in [
             ("k_proj.kv_cache_scale", "attn.k_cache_scale"),
             ("k_proj.kv_cache_offset", "attn.k_cache_offset"),
             ("v_proj.kv_cache_scale", "attn.v_cache_scale"),
             ("v_proj.kv_cache_offset", "attn.v_cache_offset"),
         ]:
-            assert self._scale("C8", f"model.layers.0.self_attn.{suffix}") == f"model.layers.0.self_attn.{dst}"
+            assert m.map_name(f"model.layers.0.self_attn.{suffix}") == f"model.layers.0.self_attn.{dst}"
 
-    def test_other_types_or_names_return_none(self):
-        assert self._scale("", "model.layers.0.self_attn.k_proj.kv_cache_scale") is None
-        assert self._scale("C8", "model.layers.0.self_attn.q_proj.weight") is None
+    def test_unrelated_names_unchanged(self):
+        name = "model.layers.0.self_attn.k_proj.kv_cache_scale"
+        assert self._mapper("").map_name(name) == name
+        name2 = "model.layers.0.self_attn.q_proj.weight"
+        assert self._mapper("C8").map_name(name2) == name2
 
 
 class TestModelSlimInt2Selection:
@@ -129,7 +151,7 @@ class TestModelSlimInt2Selection:
     def test_int2_layer_predicate(self):
         from types import SimpleNamespace
 
-        from vllm_ascend.quantization import modelslim_config as msc
+        from vllm_ascend.quantization.configs import modelslim_config as msc
 
         on = SimpleNamespace(enable_int2_quant=True, int2_quant_layers=[3])
         assert msc.AscendModelSlimConfig.is_int2_quant_layer(on, "model.layers.3.self_attn.q_proj")
@@ -140,7 +162,7 @@ class TestModelSlimInt2Selection:
     def test_get_quant_method_selects_int2_for_int2_layer(self):
         from types import SimpleNamespace
 
-        from vllm_ascend.quantization import modelslim_config as msc
+        from vllm_ascend.quantization.configs import modelslim_config as msc
         from vllm_ascend.quantization.methods.kv_int2 import (
             AscendINT2KVCacheAttentionMethod,
         )
@@ -156,6 +178,9 @@ class TestModelSlimInt2Selection:
             is_c8_quant_layer=lambda p: False,
             is_int2_quant_layer=lambda p: True,
             quant_prefix_mapper=lambda mt, p: p,
+            # main's get_quant_method refreshes packed-module names before
+            # dispatch; the stub does not need the update.
+            _update_packed_modules_mapping=lambda mt: None,
         )
         fake_vllm_cfg = SimpleNamespace(
             model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="ut_fake_model"))
@@ -163,7 +188,8 @@ class TestModelSlimInt2Selection:
         with (
             mock.patch.object(msc, "get_current_vllm_config", return_value=fake_vllm_cfg),
             mock.patch.object(msc, "LinearBase", type("_LB", (), {})),
-            mock.patch.object(msc, "FusedMoE", type("_FM", (), {})),
+            # main's modelslim_config no longer imports FusedMoE at module
+            # scope (the MoE path moved), so there is nothing to patch there.
             mock.patch.object(msc, "AttentionLayerBase", _FakeBase),
             mock.patch("vllm_ascend.quantization.method_adapters.AscendKVCacheMethod") as fake_kv,
             mock.patch(
