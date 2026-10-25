@@ -528,7 +528,7 @@ flock /tmp/r218_npu7.lock -c \
 
 ## 12. 上游提交完整台账（2026-10-25 第 5 波主 Agent 终版）
 
-### 已提交（6 个正式上游 PR，全部 main 基）
+### 已提交（7 个正式上游 PR，全部 main 基）
 
 | 单元 | PR | head | 依赖声明 | 状态 |
 |---|---|---|---|---|
@@ -536,8 +536,9 @@ flock /tmp/r218_npu7.lock -c \
 | 02 KV 编码器 | [#19568](https://github.com/vllm-project/vllm-ascend/pull/19568) | `29291d83e` | ∅ | ready；同上 |
 | 03 旋转加载器 | [#19569](https://github.com/vllm-project/vllm-ascend/pull/19569) | `ece725142` | ∅（config 12 行归 01） | ready；同上 |
 | 04 vendored launchers | [#19570](https://github.com/vllm-project/vllm-ascend/pull/19570) | `96ef95c9a` | ∅（运行期 cpp_extension 构建） | ready；加固 314f9186e＋**异步边界修复**（§3.7 根因定谳，三分对照 11/12→0/12，60/60+sweep 20/20+UT139+capfix 849,280tok 复验）全 CI 绿 |
-| 05 helpers 重定位 | [#19728](https://github.com/vllm-project/vllm-ascend/pull/19728) | `7f26e73ec` | #19577+#19569（分支含依赖内容；正文附增量 diff 链接） | open；测试 37 passed（含依赖单元），ruff/mypy 清洁 |
-| 06 ctx import hub | [#19729](https://github.com/vllm-project/vllm-ascend/pull/19729) | `93ba08606` | #19577 | open；测试 20 passed；main 适配（attention_cp 元数据、剔除 release 专属 kvcomp/flashcomm2 再导出） |
+| 05 helpers 重定位 | [#19728](https://github.com/vllm-project/vllm-ascend/pull/19728) | `7f26e73ec` | #19577+#19569（分支含依赖内容；正文附增量 diff 链接） | open；**全 CI 绿含 cpu-ut×2**；测试 37 passed，ruff/mypy 清洁 |
+| 06 ctx import hub | [#19729](https://github.com/vllm-project/vllm-ascend/pull/19729) | `0aff91b62` | #19577 | open；测试 20 passed；main 适配（attention_cp 元数据、剔除 release 专属 kvcomp/flashcomm2 再导出）；DCO/main 绿，pre-commit mypy 步在跑 |
+| 08 bmresolve | [#19732](https://github.com/vllm-project/vllm-ascend/pull/19732) | `edebe8823` | #19577+#19569+#19728（叠堆同上） | open；测试 43 passed（37 基座＋6 新）；mixin 裸注解块过 mypy --check-untyped-defs；首轮 CI 全包 mypy 抓 2 处 `_R144_TT_DYN += 1`（局部 --follow-imports skip 漏跨模块）→helpers 补 `dict[str, Any]` 注解复推 |
 
 注：#19552（01 的 release 基首投）已由 #19577（main 基）取代关闭。ci-gate fail＝维护者标签门（非代码失败），四 ready PR 同。
 
@@ -546,7 +547,6 @@ flock /tmp/r218_npu7.lock -c \
 | 单元 | 依赖 | 阻塞依据 | 解除条件 | 已备 |
 |---|---|---|---|---|
 | 07 slotstate＋09 bmupdate | 1,3,5,6 | 依赖 5/6（#19728/29 刚投，未合入）；两者 import 互指不可分，须同一 PR | 05/06 任一被接受或维护者确认叠堆评审；即合入后 rebase 到 main | v4 链 `4d53a162`(+1355)/`007705a9`(+1970)；m-port 树适配版（slotstate 8 行适配） |
-| 08 bmresolve | 1,3,5 | 同上（无 ctx 依赖） | 同上 | `6a61b97f`(+237)，port 树逐字节同 |
 | 10 ring mixin＋12 quantcache | 1,2,3,5,6 | 10 运行时依赖 12，须同 PR；12 引 02 编码器（已投） | 同上 | `2bc31f88`(+798)/`fc6a77f3`(+588)；quantcache 22 行适配 |
 | 11 staging / 13 bridge / 14 middlecand / 15 middlebatched / 16 middleexec+OGA / 17 decode / 18 prefill | 1,3,5,6（17 为 1,6） | 同上；均纯增量＋自有测试绿（11=4/13 无自有测试乘 19 审计/14=3/15=2/16=3/17=2/18=2） | 同上 | v4 链各 commit＋port 树逐字节同（13 bridge 33 行适配） |
 | 19 后端组装 | 1,2,3,5..18 | import 全部 12 个 mixin；差异会重复整个系列 | 05-18 合入 | `9ebddc05`(+1134) |
@@ -555,7 +555,7 @@ flock /tmp/r218_npu7.lock -c \
 | 22 worker 生命周期＋池帽 | 21＋main 移植 | model_runner_v1 在 main 不存在（#18863 移 worker/v1/）；接线实测 :1111/:6551/:6698 | 21 合入 | 7b7eafa92（+552） |
 | capfix 容量记账 | m-port-full-ut＋01 | worker.py:663 `from vllm_ascend.oscar.config import get_oscar_config`（=01）；改动落点在 22 移植引入的 INT2 块内 | 22 合入＋#19577 合入；且异步修复已进（#19570 96ef95c9a）——正式姿态验证已完成（p9：849,280 tok＝BF16 5.54×，不升格产品结论） | fork `oscar-int2/capfix-int2-spec@db6398286`（146 passed）；patch `8289c8bf…` |
 
-**叠堆评审机制现状**：2026-10-24 12:48Z 已在维护者线程询问依赖评审方式，无人工回复（仅 bots）。05/06 已按「依赖声明＋增量 diff 链接＋自含可测 head」形式投递，作为该机制的事实探针；07-18 视其反响随后续波投递（配方已验证：port 树适配版文件＋m-pr 叠基＋ruff 0.14/mypy --check-untyped-defs/pytest --noconftest 三清＋gh api blob 推送）。
+**叠堆评审机制现状**：2026-10-24 12:48Z 已在维护者线程询问依赖评审方式，无人工回复（仅 bots）。05/06/08 已按「依赖声明＋增量 diff 链接＋自含可测 head」形式投递，作为该机制的事实探针；其余 07-18 视其反响随后续波投递（配方已三轮验证：port 树适配版文件＋m-pr 叠基＋ruff 0.14/mypy --check-untyped-defs/pytest 三清＋gh api blob 推送；08 增补 mixin 裸注解块先例过 mypy attr-defined）。
 
 ### GitCode 镜像
 22 单元 v4 链 Draft 仍在 GitCode（gcw_S4YvZ8l6/vllm-ascend MR 1-22），与上表一一对应，作为内部评审镜像保留。

@@ -210,4 +210,34 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
   `PR_ADVANCE_20261024.md` §12。
 
 ---
-冻结：子 Agent B（第 5 波）2026-10-25；本页不改任何既有数值；后续增量只按 §9 追加。
+## 10. main 线增量（2026-10-25 第 6 波——上游评审整改＋单元 08-18 提交；只作增量行）
+
+- **细拆链推进至 18/22 逻辑单元、开放 PR 16 个**（不得再写 "4/22"）：第 6 波新投
+  #19732(08)/#19734(07+09)/#19735(10+12)/#19739(11)/#19741(13)/#19742(14)/#19743(15)/
+  #19746(16)/**#19747(17 decode)**/**#19750(18 prefill)**。head 以
+  `/tmp/r218_wave6_state.md`（活交接）为准，报告时重验；PR↔单元↔增量 diff↔CI↔线程
+  总表随终局交付给出。
+- **评审修复（全部 CPU 可复验、逐条先锚定）**：① 作者侧四修（paths `_REPO_ROOT` 层数＋
+  `/tmp/oscar_runner-<uid>` 多用户隔离；`_r218_diag` OSCAR_DIAG 门控＋重定向；`_R166SlotAlloc`
+  重复 rid fail-closed；zeroed 槽位换手剪枝＋events 有界）；② gemini 二轮实锤五修
+  （decode TND packed-varlen——B≥2 曾全体读最后一条 KV，入口未接线属 latent；≤3.11
+  f-string 换行 SyntaxError ×3；R113 staging 缩容 realloc；prefill `_tt_plen`→`_tt_pref`；
+  R166 冗余分支折叠）＋一驳（`.view` 非连续——接收者皆新造连续张量）；③ CI 真败修复
+  （typos `dum`/codespell `dout`/全包 mypy `_fb` str-句柄同名）。TND 回归测试已负控
+  （旧打包下红）。
+- **验证范围声明**：容器 `tests/ut/oscar` **127 passed**（含新 TND/prefill 契约）＋scoped
+  mypy 3.10/3.12 零新错＋ruff 全绿＋**真 python3.11 ast 全树解析扫描**（f-string 文法
+  门；`feature_version` 不查该类）。**边界：以上全部属 main 线结构/健壮性修复；冻结
+  组合（§1.1）的精度/性能/容量数字不受影响、不重新解释**（冻结组合=v4 链 overlay，
+  本波修复不在其内；decode TND 修复对象为未接线入口，无已发布数字可影响）。
+- **集成树↔已测代码**：main 细拆链 tip `oscar-int2/m-pr-18`（head 见状态文件）↔ 容器
+  `/tmp/mpr18_wt` 全树 tar 同步（UT 127 绿）；每分支推送前 blob 逐字节校验，且载体经
+  trees API 证实（m-pr-11/13/14 不携带 quantcache 即由该检查发现）。
+- **维护者等待（单列，非自主可解）**：全部 PR 的 `ci-gate`＝维护者标签门（ready-precise/
+  ready-all）；#19728 cpu-ut＝基础设施失败（CANN 镜像 SWR 拉取 TLS 超时、pod 未上线、
+  零测试运行），重跑已请求；19552 CLOSED（由 #19577 取代）。
+- 单元 19-22 结构性阻塞（19 组装 import 全部 12 mixin；20-22 为 release 线适配、main 缺
+  路径），本轮不投。
+
+---
+冻结：子 Agent B（第 5 波）2026-10-25；第 6 波增量按 §10 追加；本页不改任何既有数值。
