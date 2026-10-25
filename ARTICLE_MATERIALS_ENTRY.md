@@ -169,9 +169,9 @@ launch/API/等待切分（cpu_op 嵌套不可加）；12.7× 观测比成因（�
 7. P6 表述边界：哨兵留存不能单独证明算子从未写入（fill 可能晚于内核执行，发射顺序验证
    进行中）；输入/输出哈希一致只是观测，不称"写侧无罪"。
 
-## 8. 源码与证据直链（GitHub 证据分支 raw；分支 `r218-evidence/20261024`，tip `03e5db9ab`）
+## 8. 源码与证据直链（GitHub 证据分支 raw；分支 `r218-evidence/20261024`）
 
-Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/20261024/`
+Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/20261024/`（tip 2026-10-25 起推进至 `3cc27abee` 以上；本页文件名即直链路径）
 
 - **性能 r6 包**：`r218_perf_attribution_20261024r6.tar.gz` ＋ `.sha256`（sha256
   `fb52b69d8b57e078dc2ac4addcfdf0beec6b5cfefef6518a4710c2a969e31f75`）
@@ -202,10 +202,12 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
   ③ 本入口文件。**主 Agent 已重打包发布 v4**（`r218_p6_async_evidence_20261025r2.tar.gz`，
   sha256 `d986fdef…`，74 文件，包内校验 73/73 OK）——引用一律用 v4；v3 列入 SUPERSEDED。
 - capfix 分支推进：fail-safe 上推 `db6398286`（UT 146 passed），仍**未合入**。
-- 上游 PR（2026-10-25 主 Agent）：#19577/#19568/#19569/#19570 全部 **ready for review**
-  （评审线程已逐条回复＋resolve：#19568×2、#19569×2、#19570×20；#19570 修复提交
-  `314f9186e`＝Device/NPUStreamGuard 全入口、clip_idx 钳位、from_blob→torch::tensor、
-  std::system→std::filesystem、torch::empty try-catch，双环境编译＋六路逐位复验）。
+- 上游 PR（2026-10-25 主 Agent）：**6 个已投**——#19577/#19568/#19569/#19570 全部
+  **ready for review**（评审线程已逐条回复＋resolve：#19568×2、#19569×2、#19570×20；
+  #19570 修复提交 `314f9186e`＋异步边界修复 `96ef95c9a`，全 CI 绿）＋
+  **#19728（05 helpers，依赖声明叠堆，全 CI 绿含 cpu-ut×2）**＋**#19729（06 ctx hub，
+  main 适配版）**。完整提交台账（每单元依赖/阻塞依据/解除条件/已备分支）见证据分支
+  `PR_ADVANCE_20261024.md` §12。
 
 ---
 冻结：子 Agent B（第 5 波）2026-10-25；本页不改任何既有数值；后续增量只按 §9 追加。

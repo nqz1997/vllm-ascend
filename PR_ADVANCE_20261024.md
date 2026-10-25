@@ -111,7 +111,7 @@
 - `.github/PULL_REQUEST_TEMPLATE.md` 为通用模板（What/Why、user-facing、How tested），无依赖字段。
 - 现有 4 个 Draft（#19577/#19568/#19569/#19570）均为 **main 基、独立可评审的最小差异**。
 
-**明确说明**：上游只接受 main 基、可独立评审的 PR；不存在"跨 fork 堆叠"通道。fork 内部 Draft 不构成上游贡献。因此 **05–22 不开上游 PR**，仅在 fork 上备好分支并标 "ready, blocked on 01+03 / 01"（本表 + 标签即标记）。待 #19577（01，release 基）与其 main 基对应项被接受后，按同一"最小差异"方法逐个重建提交。
+**明确说明**：上游只接受 main 基、可独立评审的 PR；不存在"跨 fork 堆叠"通道。fork 内部 Draft 不构成上游贡献。因此 **05–22 不开上游 PR**，仅在 fork 上备好分支并标 "ready, blocked on 01+03 / 01"（本表 + 标签即标记）。待 #19577（01，main 基；release 基首投 #19552 已关闭取代）被接受后，按同一"最小差异"方法逐个重建提交。
 
 ---
 
@@ -497,7 +497,7 @@ flock /tmp/r218_npu7.lock -c \
 ## 11. 第 5 波收尾（2026-10-25，主 Agent）
 
 ### 上游 PR — 四 PR 全部 ready for review（无未完成作者事项）
-- **#19577**（01, release 基）：ready（0 未决线程；此前 DCO/标题已处理）。
+- **#19577**（01，**main 基**；2026-10-25 复核远端 baseRefName=main，release 基首投 #19552 已取代关闭）：ready（0 未决线程；此前 DCO/标题已处理）。
 - **#19568**（02, main 基）：ready；2 线程已回复＋resolve；标题改
   `[Attention][Feature] oscar: add the INT2 KV encoder (per-token-head affine, pure Torch) [2/22]`。
 - **#19569**（03, main 基）：ready；2 线程已回复＋resolve（引用既有修复提交）。
@@ -525,3 +525,37 @@ flock /tmp/r218_npu7.lock -c \
   v3 的 71 项中替换缺陷版脚本，＋ref_reproduction/layout_sweep/RAW_MANIFEST/README v4 版本块；
   解包往返校验 73/73 OK）。**v3（`92ac574b…`）SUPERSEDED**。文章材料入口
   `ARTICLE_MATERIALS_ENTRY.md` §5/§8/§9 已同步 v4＋四 PR ready 状态。
+
+## 12. 上游提交完整台账（2026-10-25 第 5 波主 Agent 终版）
+
+### 已提交（6 个正式上游 PR，全部 main 基）
+
+| 单元 | PR | head | 依赖声明 | 状态 |
+|---|---|---|---|---|
+| 01 配置面 | [#19577](https://github.com/vllm-project/vllm-ascend/pull/19577) | `9ce844dc5` | ∅ | ready；DCO/pre-commit/main/cpu-ut 绿 |
+| 02 KV 编码器 | [#19568](https://github.com/vllm-project/vllm-ascend/pull/19568) | `29291d83e` | ∅ | ready；同上 |
+| 03 旋转加载器 | [#19569](https://github.com/vllm-project/vllm-ascend/pull/19569) | `ece725142` | ∅（config 12 行归 01） | ready；同上 |
+| 04 vendored launchers | [#19570](https://github.com/vllm-project/vllm-ascend/pull/19570) | `96ef95c9a` | ∅（运行期 cpp_extension 构建） | ready；加固 314f9186e＋**异步边界修复**（§3.7 根因定谳，三分对照 11/12→0/12，60/60+sweep 20/20+UT139+capfix 849,280tok 复验）全 CI 绿 |
+| 05 helpers 重定位 | [#19728](https://github.com/vllm-project/vllm-ascend/pull/19728) | `7f26e73ec` | #19577+#19569（分支含依赖内容；正文附增量 diff 链接） | open；测试 37 passed（含依赖单元），ruff/mypy 清洁 |
+| 06 ctx import hub | [#19729](https://github.com/vllm-project/vllm-ascend/pull/19729) | `93ba08606` | #19577 | open；测试 20 passed；main 适配（attention_cp 元数据、剔除 release 专属 kvcomp/flashcomm2 再导出） |
+
+注：#19552（01 的 release 基首投）已由 #19577（main 基）取代关闭。ci-gate fail＝维护者标签门（非代码失败），四 ready PR 同。
+
+### 未提交（逐项：依赖对象 / 阻塞依据 / 解除条件 / 已备内容）
+
+| 单元 | 依赖 | 阻塞依据 | 解除条件 | 已备 |
+|---|---|---|---|---|
+| 07 slotstate＋09 bmupdate | 1,3,5,6 | 依赖 5/6（#19728/29 刚投，未合入）；两者 import 互指不可分，须同一 PR | 05/06 任一被接受或维护者确认叠堆评审；即合入后 rebase 到 main | v4 链 `4d53a162`(+1355)/`007705a9`(+1970)；m-port 树适配版（slotstate 8 行适配） |
+| 08 bmresolve | 1,3,5 | 同上（无 ctx 依赖） | 同上 | `6a61b97f`(+237)，port 树逐字节同 |
+| 10 ring mixin＋12 quantcache | 1,2,3,5,6 | 10 运行时依赖 12，须同 PR；12 引 02 编码器（已投） | 同上 | `2bc31f88`(+798)/`fc6a77f3`(+588)；quantcache 22 行适配 |
+| 11 staging / 13 bridge / 14 middlecand / 15 middlebatched / 16 middleexec+OGA / 17 decode / 18 prefill | 1,3,5,6（17 为 1,6） | 同上；均纯增量＋自有测试绿（11=4/13 无自有测试乘 19 审计/14=3/15=2/16=3/17=2/18=2） | 同上 | v4 链各 commit＋port 树逐字节同（13 bridge 33 行适配） |
+| 19 后端组装 | 1,2,3,5..18 | import 全部 12 个 mixin；差异会重复整个系列 | 05-18 合入 | `9ebddc05`(+1134) |
+| 20 v1 接线 | 19＋main 移植 | v4 版是 release 整文件重写（main 无意义）；适配版 2ee7126a1 | 19 合入 | m-port-full-ut 内适配版（+326） |
+| 21 kv_int2 注册 | 19＋main 移植 | 惰性挂 19；modelslim 已随上游 #14030 移 quantization/configs/ | 19 合入 | 5dd2239af（+321） |
+| 22 worker 生命周期＋池帽 | 21＋main 移植 | model_runner_v1 在 main 不存在（#18863 移 worker/v1/）；接线实测 :1111/:6551/:6698 | 21 合入 | 7b7eafa92（+552） |
+| capfix 容量记账 | m-port-full-ut＋01 | worker.py:663 `from vllm_ascend.oscar.config import get_oscar_config`（=01）；改动落点在 22 移植引入的 INT2 块内 | 22 合入＋#19577 合入；且异步修复已进（#19570 96ef95c9a）——正式姿态验证已完成（p9：849,280 tok＝BF16 5.54×，不升格产品结论） | fork `oscar-int2/capfix-int2-spec@db6398286`（146 passed）；patch `8289c8bf…` |
+
+**叠堆评审机制现状**：2026-10-24 12:48Z 已在维护者线程询问依赖评审方式，无人工回复（仅 bots）。05/06 已按「依赖声明＋增量 diff 链接＋自含可测 head」形式投递，作为该机制的事实探针；07-18 视其反响随后续波投递（配方已验证：port 树适配版文件＋m-pr 叠基＋ruff 0.14/mypy --check-untyped-defs/pytest --noconftest 三清＋gh api blob 推送）。
+
+### GitCode 镜像
+22 单元 v4 链 Draft 仍在 GitCode（gcw_S4YvZ8l6/vllm-ascend MR 1-22），与上表一一对应，作为内部评审镜像保留。
