@@ -140,10 +140,21 @@ serve 日志：容器 `r218-main-verify:/tmp/serve_<tag>.log`。
 - 【新定位（设备轮 2，2026-10-24 13:16–14:53Z，详见 `delivery/PR_ADVANCE_20261024.md` §3.6）】
   首个分歧张量＝**HP 环 bf16 行（recent 窗）**：坏 rep 首个 decode step 环行即与 blocking 分歧，
   此刻 `key_rot/value_rot`（环写输入值）、q、INT2 中层页、中层算子输出**全部逐字节相同**；
-  张量级形态＝环 recent 窗 [128,1024) **NaN 污染**、每代恒增 1,310,720 元素（跨代残留）；
+  张量级形态＝环 recent 窗 [128,1024) **0x7FFF 位型污染**（第 3 波读作"跨代恒增残留"；
+  **第 4 波更正（PR_ADVANCE §10）：归因被推翻**——首事件时刻环逐字节干净、环读写排除，
+  污染经隐层流进入 QKV；环尾 +80 行/rep 自 rep9 起为各自 prefill 自写；NaN 不跨 token 边界）；
   INT2 写侧 src_k/src_v/src_ks 12 rep 全程哈希与 blocking 一致（量化输入观测；⚠不能据此排除存储写越界/内存副作用——写入者审计进行中）。
   写→读同步（9/12）、HP 环写生命周期（8/12）排除仍成立；环写机制候选
   `R166_STREAMFIX=ring`（12/12）、`R164_EAGER_SLIDE`（9/12）不治。
+- 【第 4 波新增（2026-10-25，详见 PR_ADVANCE §10）】**载体层实锤**：MIDCAP2 async 捕获在
+  全量 `torch.npu.synchronize()` 后 lse 全 −9999（`int2_op_launch_lse_fast_r152.cpp:137`
+  前置哨兵）＋out 垃圾 3.2e36，而池载体为 torch.zeros → **真实 missing-write 且 enqueue 报
+  成功**（launcher 返回 `(r, ws, lr, g_ws_hits)`，消费方只看 r）；主 Agent 亲自重跑纯 torch
+  参考复现（async#2 cos=0.000000 / lse=−9999×3 vs blocking cos=0.999994；捕获#1 两腿
+  0.999927 同）。首事件 q/kr/vr 同时全 0x7FFF（=INT32_MAX 位型；哈希 9a887382f507 经主
+  Agent 独立构造复证）；共享态风险：全局 g_ws 工作区、`_r112_opool` 池载体、kr_ptr 步内
+  跨层复用。**指令级写入者未定位，修复仍 OPEN**；blocking=launch 串行化为结构差异（假设，
+  非 CANN 归因）。
 - blocking 0/12 只支持"时序相关"，**不据此归因 CANN**；未取得可合入最小修复前，
   默认异步正确性保持 OPEN，不标生产可用。NaN 种子来源（外部越界写 vs 环读侧放大）OPEN。
 

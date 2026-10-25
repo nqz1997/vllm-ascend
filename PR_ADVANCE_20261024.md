@@ -15,7 +15,7 @@
 | 上游依赖评审方式 | 仓库 CONTRIBUTING/docs/PR 模板**没有** stacked-PR 或"依赖 PR"机制；`main2main` 只是 CI 标签。→ **05+ 不开上游 PR**，只准备 fork 分支并标 blocked |
 | fork 产物 | `oscar-int2/m-port-full-ut` @ `81295d899` + 17 个 `oscar-int2/prep-unit-NN` 预览分支 + 1 个 blocked 标签（§1.3） |
 | 六项修复归属 | 2 项 main-only、4 项 upstream-general；**四个已提交 PR（01–04）都不需要改**（§2） |
-| 默认异步故障 | **定位进 HP 环 recent 窗（三层 decode 的 bf16 环行）跨代 NaN 污染**：INT2 中层页与中层算子在分歧点逐字节无罪（§3.6）；最小复现 = 单请求 1080 token，async 5–12/12 坏 vs blocking 0/12；两个环写机制候选不治；**未找到可合入的最小修复 → OPEN**（§3.5/§3.6） |
+| 默认异步故障 | **第 4 波更新（§10，推翻第 3 波"跨代环残留"读法）**：首事件 rep1/step4/L30 q/kr/vr 同时全 0x7FFF（=INT32_MAX 位型，哈希 9a887382f507 已被主 Agent独立构造复证）且**该时刻环逐字节干净——环读/写被排除**，污染经隐层流进入 QKV；**载体层实锤＝MIDCAP2 全量同步后 lse 哨兵 −9999 留存＋out 垃圾（真实 missing-write 且 enqueue 报成功，launcher 返回只含 r）**，主 Agent已亲自重跑纯 torch 参考复现（async#2 cos=0.000000 vs blocking 0.999994）；环尾 +80 行/rep 自 rep9 起为各自 prefill 自写、NaN 不跨 token 边界；最小复现 async 11–12/12 vs blocking 0/12；**指令级写入者未定位、无可合入修复 → OPEN**（§10） |
 | 2.00× 容量 | 真因 = KV spec 用 `head_size`（未用 packed `head_size//4`）记账 = 每 token 每层 2048 B，物理 576 B；现池仅用掉 10.58/21.04 GiB。**独立分支已设备验证**：池 306,432 → **849,280 tok（2.77×；对 BF16 5.54×）**，HP 环 4.64 GiB 预留，blocking 电池 41/41（§4、`MAIN_SERVICE_VERIFY` §7）；产品结论仍 OPEN（未合入/未正式姿态复跑） |
 | 立场 | **OPEN**；不以 blocking 回归替代正式模式验收；不称 main 可生产（§5） |
 
@@ -219,6 +219,7 @@
 3. **首个分歧张量＝HP 环 bf16 行**：坏 rep 首个 decode step 内（p6a rep5 rec18；p6g rep2 rec11）`ring_k/ring_v` 先分歧，此刻 q、中层页、**中层算子输出**全部仍与 blocking 逐字节一致；q 从下一记录起才错（该层 HP 层注意力读到坏环 → 输出错 → 后续全错）。中层自定义算子以「分歧点输入/输出逐字节一致」**直接排除该缺陷类**（不经 R113 开关）。
 4. **写落地被污染而非写值错**：p6g rep2 分歧点上 `key_rot/value_rot`（环写输入值）哈希与 blocking **相同**，环行却已不同——NaN 不经写入值进入。
 5. **污染形态＝环 recent 窗 NaN**：张量级（p6k，层 8–23 × 6 rep）：recent 窗列段 [128,1024) 变 NaN，prefix 段 [0,128) 始终正确；NaN 计数每代恒增 **1,310,720 元素/rep**（rep2 1.09M → rep5 5.02M，等差）＝**跨代环残留累积**（与 2026-10-17 r218-cross-generation-ring-staleness 的旧怀疑吻合）。
+   ⚠**第 4 波更正（§10）**：本条"跨代残留"归因被推翻——首事件时刻环逐字节干净（环读/写排除）；环尾 +80 行/rep 自 rep9 起为各自 prefill 自写（r09=74/r10=154/r11=234 行，锚 1023，层间同构）；NaN 不跨 token 边界（每步瞬态级联）。等差计数观察本身仍真，归因以 §10 为准。
 6. **环内容本就逐代合法不同**（blocking 亦然：ring_k 每 rep 不同、rk_pre/q 相同），async 前几 rep 与 blocking 的逐 rep 哈希**完全一致**，从首个坏 rep 起才分岔。
 7. **修复候选两枚均不治**（3.6 表 p6i/p6j）→ 未取得可合入最小修复，**P6.e 保持 OPEN**；capfix 叠加复验按任务仅在取得修复后执行，故未跑。
 8. **未证实（OPEN）**：NaN 的**种子**来源（候选：外部核/工作区越界写命中环分配；环读侧 slide 复制已污染内存放大）——两候选均未闭合；**不归因 CANN**；不以失败率差异断言独立边数。侧流检查：树内 side-stream 仅出现在默认关闭的 warmup/capture 协议块（middle_exec.py:766/1696/2087，两端 wait_stream 配对）。
@@ -407,7 +408,7 @@ flock /tmp/r218_npu7.lock -c \
 | p6 证据清点 | `/tmp/r218_p6_host` 106 文件/445MB；p6k 96 个环行张量（r00–r05 × l08–l23）；配对腿 jsonl 齐。 |
 | 写侧无罪（独立重算） | 主 Agent 用独立脚本按 mid 重置切 12 rep×828 记录：**src_k/src_v/src_ks/curblk_k 在全部 12 rep、全部 828 记录与 blocking 逐哈希一致**（含 8 个输出坏 rep；量化输入观测的二次确认。⚠第 4 波裁定：src 一致不能宣称"写侧无罪"，存储写越界/内存副作用未排除——写入者审计第 4 波进行中）。 |
 | NaN 形态（独立重载） | 直接 `torch.load` p6k 张量：r02_l14 NaN 行 963–1023（61 行/62,464 元素）、r03_l08 883–1023（141 行/144,384）、r05_l23（319,488）；**prefix 行 [0,128) 全部零 NaN**；hk/hv 同数。recent 窗限定＋单调增长证实；×~18 层与 §3.6 结论 5 的 1.09M→5.02M 量级相符。 |
-| p6a 口径辨析 | `p6a_mdiag_async.analysis.txt`＝`total=12 bad=8`（1 个轻度 fox + 7 个 `!!!!`），blocking 0/12——**8/12 为输出级判据，成立**。⚠注意：朴素 ring_k/ring_v 全张量哈希对比会得 11/12 分歧（rep2–4 有散布性分歧但输出正确；环内容含槽位布局敏感区，良性漂移会虚增分歧数）。§3.6 结论 1「前 4 rep 全部 828×2 条完全一致」在朴素哈希口径下**仅 rep1（首个）完全一致**——该句按输出级/精细对齐口径理解，引用时以本条为准；不影响结论 2–8（写侧无罪、首分歧=环、NaN 跨代累积均被独立重算证实）。 |
+| p6a 口径辨析 | `p6a_mdiag_async.analysis.txt`＝`total=12 bad=8`（1 个轻度 fox + 7 个 `!!!!`），blocking 0/12——**8/12 为输出级判据，成立**。⚠注意：朴素 ring_k/ring_v 全张量哈希对比会得 11/12 分歧（rep2–4 有散布性分歧但输出正确；环内容含槽位布局敏感区，良性漂移会虚增分歧数）。§3.6 结论 1「前 4 rep 全部 828×2 条完全一致」在朴素哈希口径下**仅 rep1（首个）完全一致**——该句按输出级/精细对齐口径理解，引用时以本条为准；不影响结论 2–8 的观察本体；其中"NaN 跨代累积"的**归因**已被第 4 波 §10 推翻（首事件环干净、prefill 自写、步内瞬态）。 |
 | 容器 pristine | 容器 `/workspace/oscar-vllm-ascend` HEAD=`81295d899`、`middle_exec.py` md5=`9ea86ce17611`、tracked 无改动；NPU 7 `proc-mem` 无进程、HBM 3455MB 基线（窗口结束后短时 60GB 占用为外部容器负载，非本会话，未触碰）。 |
 | P2/P3 fork 产物 | GitHub API 复核 prep-unit-06=`048e14aa3`、19=`d6eaad09c`、21=`db15c9224`、22=`eab326066` 与 A 报告逐项一致（其余 11 个未逐项复验，方法同 §8 已验证）。 |
 | P4 对外交互 | #19577 依赖评审一次性询问在（2026-10-24T12:48:52Z 评论）；CANN #6553 open、2 评论、assignee 在，无本会话越权操作。 |
@@ -418,3 +419,31 @@ flock /tmp/r218_npu7.lock -c \
 2. 异步缺陷保持 OPEN：NaN 种子来源两个候选（外部核/工作区越界写 vs 环读侧放大）均未闭合；下一轮建议从环分配邻接关系＋中层 op 工作区越界审计入手（A 建议，主 Agent 采纳）。
 3. p6 纯 torch 参考对 MIDCAP2 实操作数的正式跑未做（窗口预算），工具 `p6_compare.py` 就绪——遗留项，非阻塞。
 4. capfix 维持独立分支未合入，产品结论 OPEN 不变。
+
+## 10. 子 Agent A · 第 4 波终报（2026-10-25 00:2xZ；T1/T2/T4/T5）
+
+设备窗口（全部 NPU 7，锁日志 `/tmp/r218_npu7.lock.log` 连续 START/END 记录）：
+- W6 (23:35–23:45Z): caps 腿 + wtrace 补丁（heredoc 嵌套损坏→p6o 未探针跑成基线 11/12 bad）；END 已记，树还原 9ea86ce1，HBM 3455MB。
+- W6b (23:47–23:52Z): docker cp 修法重打 WTRACE2 补丁（md5 870d13bd），p6o2_w2_async **bad=11/12——轻探针不再掩盖故障**（当日未探针基线同为 11/12；p6k 12/12、p6m 0/12 的差异只按"探针同步点数影响竞态"陈述，不作边数断言）。END 已记：双模式 kill 确认（pgrep 空）、HBM 3456MB 回落、树还原 9ea86ce1（bind-mount 双侧 md5）。
+
+### T1 — 三分类（`verify_scripts/p6_t1_ringclass.py` + p6k 12/12 腿）
+- **A 有效数据损坏**：NaN 块恒为 [X,1024) 尾接、payload 一律 **0x7FFF**（= f32 0x7FFFFFFF/INT32_MAX 截断成 bf16，非算术 canonical NaN 0x7FC0）、按 rep 每 rep 每层 **+80 行** 增长（963/883/803/723，l16-23 更深，l15 跨界）。**全部落在合法 recent 读集 [128,1024) 内（rep02-05: in=1065/2345/3625/4905，outside=0）——污染确定进入注意力**。
+- **B 未使用槽位差异**：未捕获（仅 slot 0 有 dump；mhp=1024 无余量行）。**C 合法重绑**：有限行跨 rep 合法漂移（wave-3 已录性质；prefix 区逐字节同）。
+- **MIDCAP2 独立参考**（`p6_compare.py --ref`，修 GQA 映射 + lane-interleaved unpack 后）：async/blk 两模式 kernel vs 纯 torch fp64 参考 cos=0.999927/0.999994 —— **中层算子数值无罪**（撤回类推不适用：按撤回规则②它仍是候选写入者）。
+
+### T2 — 写者审计（定位到机制层，未到指令级；如实）
+新证据链（`/tmp/r218_p6_host/p6o2_w2_async/`，分析 `analysis/wtrace2_onset_analysis.txt`，原始 dump `r218_wtrace_dumps/`，9936 条 `r218_wtrace.jsonl`）：
+1. **首事件**：rep1/step4/L30，q/kr/vr **同时** 全 0x7FFF（kr==vr==5abbd4b74175、q==9a887382f507）；前 5 个层调用（L25-29，onset01.pt stash）payload 级全健康无局部污染；**该时刻 L8 环全 [1024,8,128] 零 NaN 行——环读/环写在首事件处被排除**。污染经隐层流（前一层 attn/mid/merge/MLP）进入 L30 的 QKV。
+2. q 与 kr/vr 无一例单独坏（0 条不对称）→ 一次 hidden 全 0x7FFF 同时打穿三视图；kr_ptr 在步内跨层复用（36 调用仅 3-10 个地址）证实 scratch 复用体制，但同调用内 q/kr/vr/hk 无指针碰撞。
+3. 步边界结构：rep1/step4 L30-35 → steps5-15 L31-35 → step16 L20-35 → steps17+ L21-35（平台至 rep8）→ rep8/step7 起 L4-35；step5/L00 即恢复健康（decode 每步从新 token embedding 重算 hidden，NaN 不跨 token 边界留存）→ 每步瞬态级联。
+4. 环普查（rep 首捕获步）：r00-r08 全 0（新请求 1082-token prefill 全量覆写环行）；**r09=74 行 [950,1023]、r10=154、r11=234（+80/rep，锚定 1023 最recent侧，层 8/15/16 完全同构）→ 第 9+ rep 的环尾 NaN 是各自 prefill 自己写的**（后期 prompt token hidden 已污），不是跨代残留（rep1-8 的 prefill 都干净覆写过）。
+5. 载体层直接证据：MIDCAP2 async 捕获 #2 于 **torch.npu.synchronize() 全量同步后** lse_h 全 −9999（`csrc/oscar/int2_op_launch_lse_fast_r152.cpp:137` 的 `lse.fill_(-9999)` 前置哨兵）、out_h=3.2e36 垃圾，且池载体本身是 `torch.zeros`（`middle_candidate.py:95-99`）→ **哨兵被写入而算子结果写从未落地=一次真实的 missing-write，enqueue 却报成功**（返回元组 (r=GetWorkspaceSize 状态, ws, lr=launch 状态, g_ws_hits)，消费方只看 r）；此事件在健康跑中亦出现（p6m vs p6n：lh 34% 记录 async/blk 不一致而其余逐位同）——即污染种子。
+6. 已识别异步路径共享态风险（file:line）：全局缓存工作区 `g_ws` 跨全部层/调用共享（同文件 ~157-165 + warm_ws）；池化输出载体 `_r112_opool` 跨 36 层共享；launcher rc 语义不含 lr。ASCEND_LAUNCH_BLOCKING=1 串行化 launch 是控制腿从不失败的结构性差异（**假设，不作 CANN 归因**）。
+**未定位到**：产生 0x7FFFFFFF 位型的具体写入指令/流序违反。**已排除（首事件处）**：环维护写路径、环读路径、同调用指针混叠、局部/尾部污染渐进、跨代环残留（phase-1）。撤回规则①③落实：quantize 散写侧未经首事件检验不称无罪；无 CANN 归因、无独立边数断言。
+- 无修复 → T3 未触发（capfix 5.54× 维持不进产品结论）。
+
+### T4 — HP 环预留 fail-safe（capfix 分支，未合入）
+`worker.py _oscar_int2_hp_ring_bytes` 异常路径 warning+return 0（fail-open）改为**保守上界回退**（ms 保留 +1 且忽略 HPFIT 收缩；mhp 恒保 +4；prefix/recent 读 R109_TT_* 同 config.py 缺省）＋ 几何不可推导时 RuntimeError fail-closed。提交 `d1ebaa718`；容器内 UT 首跑暴露测试假体缺绑定方法 → `db6398286`（测试假体挂 MethodType）。**验证：tests/ut/oscar 全目录 --noconftest 146 passed（含 4 条新 fail-safe 用例）**（容器 /usr/local/python3.12.13 同时有 acl+numba；注意 PYTHONPATH 必须前缀拼接而非整体替换，否则丢 CANN site-packages）。分支头现为 db6398286。
+
+### T5 — 上游 PR 复查（2026-10-24 晚）
+四 PR（#19577@9ce844dc5 / #19568@29291d83e / #19569@ece725142 / #19570@9f9f37244）均 draft/open、head 无变化、无新外部评审意见、checks 6 通过（ci-gate 为 maintainer 标签门）→ 无可处理反馈；LEDGER §七已更新三态列（上游已提交×4、准备好=m-port-full-ut@81295d899+17 prep-unit+capfix、#19552 closed）。未重复 dependency-review 提问（10-24T12:48Z 已问）；05+ 新上游 PR 维持等待 maintainer 回复。
