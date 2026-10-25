@@ -248,11 +248,29 @@
 - **H_C 缓冲区复用（g_ws 跨层共享）：证伪**（bound 腿 g_ws 共享制不变即 0/12；无需复制 workspace）。
 - **错误边混淆（诚实记录）**：旧位置（fill 前）flush 也治愈本复现——它排空了深层积压，遗留「fill 单算子竞态」由 GetWorkspaceSize 的 host 耗时（~88µs/call 量级，r152 源注释 msprof）掩盖；但这**不是源码级顺序保证**（Enqueue 与直调之间无顺序原语），正确修复＝fill 之后的右边界。任务书「不能只把旧位置改 stream(true)」的警告被实验精确证实为「能治标、非保证」。
 
-**修复（T3，分支 `oscar-int2/launcher-commit-boundary` @ p7_tree，commit `74e0a67b2`，树内文件 md5 `c2ca87a90a15da012da964a7abab0fd8`）**：7 个直调入口统一加 `r218_qbound_flush`（＝官方 `stream(true)` 边界，含 flush 失败 nullptr 硬报错——nullptr 若流入 aclnn 即默认流跨流灾难）＋ GetWorkspaceSize r/ex 与 launch lr 的 TORCH_CHECK 硬报错（替代「只查 r 后继续消费输出」）＋ `qbound_stats()` 计数器＋每入口一次性 ACTIVE 标记。**保持默认异步**（无全局 ASCEND_LAUNCH_BLOCKING、无设备同步）；契约测试 `tests/ut/oscar/test_int2_launcher_commit_boundary.py`（4 项，静态顺序契约：边界必须在哨兵之后、直调之前，7 入口全覆盖＋lr 检查数守恒）。
+**修复（T3，分支 `oscar-int2/launcher-commit-boundary`，本地 `74e0a67b2`/树 `4207cf23`＝设备验证字节同一，cpp md5 `c2ca87a90a15da012da964a7abab0fd8`；fork 已推 `22834cabc`（树逐字节同）；主 Agent 裁定归属 **#19570**＝m-pr-04 后续提交 `82dbc3e24`（DCO check pass，PR 评论 issuecomment-6392527971；本地孪生 `9aa1894cf`；树 `67578a82`＝314f9186e 加固＋边界，容器 BUILD-IMPORT OK `r113.orch.v9+r145v3+r218p7bound`＋契约测试 4/4）**：7 个直调入口统一加 `r218_qbound_flush`（＝官方 `stream(true)` 边界，含 flush 失败 nullptr 硬报错——nullptr 若流入 aclnn 即默认流跨流灾难）＋ GetWorkspaceSize r/ex 与 launch lr 的 TORCH_CHECK 硬报错（替代「只查 r 后继续消费输出」）＋ `qbound_stats()` 计数器＋每入口一次性 ACTIVE 标记。**保持默认异步**（无全局 ASCEND_LAUNCH_BLOCKING、无设备同步）；契约测试 `tests/ut/oscar/test_int2_launcher_commit_boundary.py`（4 项，静态顺序契约：边界必须在哨兵之后、直调之前，7 入口全覆盖＋lr 检查数守恒）。
 
 **开销记账**：flush 快路径 0.32µs/call（vs raw 0.09µs）；带 1 个挂起算子（生产典型）排空 ~16µs/call（独立微基准 `/tmp/flushbench`，NPU7）；36 层/步 ⇒ ~0.6ms/步理论上限，服务级吞吐三腿一致（4.8–4.9 tok/s，不可测差异）。
 
 **遗留边界（如实）**：修复覆盖「直调越过已入队 ATen 提交」这一边；未触及（也无需触及）g_ws 复用、quant/scatter 路径（自有 barrier 且 p6c/p6d 已证清白）、图模式 op_v3（本姿态 eager 未激活，边界同样已加）。
+
+**默认异步全电池（T4，修复树，窗口 01:55:13–02:14:31Z，lock log）**：
+
+| 腿 | 内容 | 结果 |
+|---|---|---|
+| `p8c1/c2/c3` | 3 次冷启动 ×（x1080x1 + ragged/l4/l4mix/long2 ×3 rep） | **45/45 全绿**（0 TORCH_CHECK） |
+| `p8s` | 连续生成 sweep（reuse/long1/mix2/h8/s4/n8/n2/n3/n4/single ×2，含 7200 项长 prompt、槽位复用、批量更替） | **20/20 全绿** |
+| `p8cap` | 第 4 冷启动（同形状；注：capfix 因遗留未跟踪文件 apply 失败，此腿实为 fix-only） | **15/15 全绿** |
+| `p9` | **真 capfix 叠加**（清遗留 `tests/ut/oscar/test_int2_kv_spec.py` 后 `81295d899..db6398286` 干净 apply） | KV 池 **849,280 tok（414.69×@2048）**；smoke 输出干净；CAPFIX-REVERTED |
+
+容量对账（同日同设备）：INT2 记账基线（fix 树）306,432 tok；BF16 153,216 tok → 记账 2.00×；capfix 849,280/153,216 = **5.54×**（对 BF16）、849,280/306,432 = 2.77×（对记账）——与 2026-10-24 capfix 记录逐位复现。**按用户裁定 5.54× 不升格产品结论**。可用 KV 预算 16.40 GiB。
+
+**UT 回归（fix 文件 staged，容器内 tests/ut/oscar 全量）**：**139 passed**（含新增 4 项契约测试）22.5s。
+
+**提交形态（T5，主 Agent 已裁定 2026-10-25）**：设备验证原树＝本地 `/home/n00928095/R218_UPSTREAM_WORK/p7_tree` 分支 `oscar-int2/launcher-commit-boundary` commit `74e0a67b2`（2 文件：launcher cpp md5 `c2ca87a9…` + 契约测试），基＝m-port tip `81295d899`；**已推 fork `22834cabc`**（树逐字节同，供溯源）。**PR 归属＝#19570 后续提交 `82dbc3e24`**（与 vendored r152 同文件，避免同文件冲突 PR；#19570 已 ready、20 线程已解）。与 capfix 分支 `oscar-int2/capfix-int2-spec @ db6398286` 正交。
+
+**P6.e 状态变更：OPEN → 修复候选已验证（本节）**——「默认异步=INT2 中层读路径」缺陷的载体从「未归因的中层污染」定谳为「launcher 直调越过 torch_npu 任务队列提交边界」；修复保持默认异步、零设备同步、每调用 0.32–16µs。待主 Agent 裁定合并后即可关闭。
+
 
 ---
 
