@@ -10,6 +10,7 @@ allocates:
   spec but inside the same free-memory budget, so it is reserved before
   the engine turns the budget into blocks.
 """
+import types
 from types import SimpleNamespace
 
 import torch
@@ -46,12 +47,18 @@ def _worker(max_num_seqs=32):
         num_attention_heads=32,
         hidden_size=4096,
     )
-    return SimpleNamespace(
+    w = SimpleNamespace(
         model_config=SimpleNamespace(hf_text_config=hf, dtype=torch.bfloat16),
         vllm_config=SimpleNamespace(
             scheduler_config=SimpleNamespace(max_num_seqs=max_num_seqs)
         ),
     )
+    # R218 wave-4: the fail-safe fallback dispatches back into
+    # _oscar_int2_hp_ring_bytes_conservative on self; give the fake the real
+    # bound method so the exception path is exercised end-to-end.
+    w._oscar_int2_hp_ring_bytes_conservative = types.MethodType(
+        NPUWorker._oscar_int2_hp_ring_bytes_conservative, w)
+    return w
 
 
 class TestPackedInt2Spec:
@@ -174,5 +181,7 @@ class TestHighPrecisionRingReservation:
                 scheduler_config=SimpleNamespace(max_num_seqs=32)
             ),
         )
+        broken._oscar_int2_hp_ring_bytes_conservative = types.MethodType(
+            NPUWorker._oscar_int2_hp_ring_bytes_conservative, broken)
         with pytest.raises(RuntimeError, match="fail-closed"):
             NPUWorker._oscar_int2_hp_ring_bytes(broken)
