@@ -1,14 +1,15 @@
-# R218 OSCAR True-INT2 — 性能归因证据包 `20261024r5`
+# R218 OSCAR True-INT2 — 性能归因证据包 `20261024r6`
 
-本目录是 `r218_perf_attribution_20261024r5.tar.gz` 解包后的内容。
-包摘要见包旁 `r218_perf_attribution_20261024r5.tar.gz.sha256`；
-包内逐文件摘要见 `SHA256SUMS`（不包含自身）。
+本目录是 `r218_perf_attribution_20261024r6.tar.gz` 解包后的内容。
+包摘要见包旁 `r218_perf_attribution_20261024r6.tar.gz.sha256`；
+包内逐文件摘要见 `SHA256SUMS`（163 项，不包含自身）。
 
 ## 1. 版本
 
 | 版本 | 内容 | 状态 |
 |---|---|---|
-| `20261024r5`（本包） | r4 全部 ＋ **sub-B profiling 腿**（`runs/bg6_prof_{int2,bf16}_2k_c32/`：chrome trace 原件、逐步墙钟、gates）＋ `profiling_20261024/`（腿驱动/钩子/分析脚本/尝试记录）＋ `figs/PERF_PROFILING_20261024.csv` 与对比图 ＋ addendum §10（2K/C32 decode 步算子级构成）＋ §1.1/§1.2/§1.3 认识论更正 ＋ 两旧文更正注记 ＋ `PR_ADVANCE_20261024.md` 更正版（含 §3.5 撤回「Python 中层排除 C++ 算子」） | **最新** |
+| `20261024r6`（本包） | r5 全部 ＋ **第 4 波性能呈现更正**：§10.2–10.4 的 host 间隙/各半/遮蔽表述由 **§10.5 取代**（跨测量条件混合量撤回为直接测量；新同条件量：ON 12 步窗口 768.50/114.75 ms/步、窗口设备空闲 65.3%/74.8%）；CSV 93 行含 measurement_condition 列；堆叠图换三面板；12.7×→两场景观测比；execute_model 计时不保证覆盖设备完成 | **最新** |
+| `20261024r5` | r4 全部 ＋ **sub-B profiling 腿**（`runs/bg6_prof_{int2,bf16}_2k_c32/`：chrome trace 原件、逐步墙钟、gates）＋ `profiling_20261024/`（腿驱动/钩子/分析脚本/尝试记录）＋ `figs/PERF_PROFILING_20261024.csv` 与对比图 ＋ addendum §10（2K/C32 decode 步算子级构成）＋ §1.1/§1.2/§1.3 认识论更正 ＋ 两旧文更正注记 ＋ `PR_ADVANCE_20261024.md` 更正版（含 §3.5 撤回「Python 中层排除 C++ 算子」） | SUPERSEDED（保留） |
 | `20261024r4` | 20261024r3 全部 ＋ `capacity/`（INT2 容量修复分支、补丁、服务尺寸日志、24/24+17/17 电池、异步负对照）＋ `PR_ADVANCE_20261024.md`（旧版：pymid 撤回前）＋ main 异步定位更正（`MAIN_SERVICE_VERIFY` §6、addendum 版本边界、差异页 OP/OPEN 口径） | SUPERSEDED（保留） |
 | `20261024r3` | r2 ＋ main 异步定位更正 | SUPERSEDED（保留） |
 | `20261024r2` | 20261024 全部 ＋ 补充页（步级分析/时间分解） | SUPERSEDED（保留） |
@@ -69,22 +70,39 @@ main 移植（单列）：`nqz1997/vllm-ascend` `oscar-int2/m-port-full-ut` @ `8
   op 级分解（78 行，含证据列）与 INT2 vs BF16 纯 decode 步构成图
 - `scripts/` — 可重跑生成脚本（含 `r218_addendum_tables.py`）
 
-## 5. 校验（当前包 = 20261024r5）
+## 5. 校验（当前包 = 20261024r6）
 
 ```bash
-sha256sum -c r218_perf_attribution_20261024r5.tar.gz.sha256   # 包旁
-mkdir -p r5 && tar xzf r218_perf_attribution_20261024r5.tar.gz -C r5
-cd r5/r218_perf_attr_20261024r5 && sha256sum -c SHA256SUMS    # 包内 156 项
+sha256sum -c r218_perf_attribution_20261024r6.tar.gz.sha256   # 包旁
+mkdir -p r6 && tar xzf r218_perf_attribution_20261024r6.tar.gz -C r6
+cd r6/r218_perf_attr_20261024r6 && sha256sum -c SHA256SUMS    # 包内 163 项
 ```
 
-直链：<https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/20261024/r218_perf_attribution_20261024r5.tar.gz>
+直链：<https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/20261024/r218_perf_attribution_20261024r6.tar.gz>
 
 分支另存 r2/r3/r4 旧包（SUPERSEDED，保留可追溯）与 `PERF_ATTRIBUTION_ADDENDUM_20261024.md`
 （r5 版，含 §10 profiling 补充）、`R218_ONE_PAGE_CONCLUSION.md`（含更正注记）、
 `PR_ADVANCE_20261024.md`（含 §3.5 pymid 撤回）、`MAIN_SERVICE_VERIFY_20261024.md`
 （05:40 版；§6.2 替换文本未并入，以 `PR_ADVANCE_20261024.md` §3.5 为准）。
 
-本页写作时间 2026-10-24；不修改任何已有数值。
+## 7. 第 5 波增量（2026-10-25）
+
+- **P6 v4 包（当前有效）**：`r218_p6_async_evidence_20261025r2.tar.gz`（28MB，
+  sha256 `d986fdef9825d9ebeda64d12a786c2ee1f1b615acafa218945622278d9d35135`，74 内容文件）。
+  相对 v3：`minimal_repro/p6_compare.py` 换为修复版 `fe2fce54…`（旧版 `c72b874c…` 的 GQA
+  reshape 对 nq=32/nkv=8 必崩＋unpack 布局错用 4-consecutive；修复版＝主 Agent 实跑版，
+  4 份 MIDCAP2 捕获 CPU 复现全 0 退出码、哨兵结论逐字复现）；新增
+  `ref_reproduction_20261025.txt`（命令/退出码/完整输出）、`layout_sweep_20261025.py`
+  （8 组合布局×GQA 判别扫描）、`RAW_MANIFEST`（229 项原始材料快照）。
+  **v3（`92ac574b…`）SUPERSEDED 保留**；引用参考脚本一律用 v4。
+- **文章材料入口（冻结）**：`ARTICLE_MATERIALS_ENTRY.md`（207 行/9 节：版本映射、精度表、
+  同 GMU/同总 HBM 分列容量与吞吐、图表与 CSV、已证实/未知、限制、raw 直链、main 线增量）。
+  GPT 系列四写作从该文件进入。
+- **上游 PR**：#19577/#19568/#19569/#19570 全部 ready for review（评审线程已逐条
+  回复＋resolve；#19570 修复提交 `314f9186e`，双环境编译＋六路逐位复验）。详见
+  `PR_ADVANCE_20261024.md` §11。
+
+本页写作时间 2026-10-24（§7 增补于 10-25）；不修改任何已有数值。
 
 ## 6. 第 4 波增量（2026-10-24 晚）
 

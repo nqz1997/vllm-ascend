@@ -226,6 +226,34 @@
 
 **最小复现包（就绪）**：容器 `r218-main-verify`（镜像=nightly，树=`81295d899`）+ `/tmp/x1080x1_req.json` + `flock … async_diag.sh <tag> int2exp`（REPS=12）×（async vs `ASCEND_LAUNCH_BLOCKING=1`）；证据 `/tmp/r218_p6_host/{p6a_mdiag_async,p6b_mdiag_blk,p6g_krv_async,p6h_krv_blk,p6k_row_async}`（jsonl 哈希流 + 96 个环行张量）+ 分析脚本 `p6_mdiag_diff.py`；复现率 5–12/12（async），0/12（blocking）。
 
+
+### 3.7 第 5 波（2026-10-25 01:33–02:0xZ，NPU 7 / flock）：根因定谳＝torch_npu 任务队列提交边界缺失，修复 12/12 全绿（P6.e 闭合候选）
+
+**机制（T1，全部 file:line 于 torch_npu 2.10.0.post7 精确构建 commit `3363ea59d49f3e08cfd8d4a1f532b756ccda0682`，取证源拷贝 `/tmp/r218_p6_host/p7/T1_SOURCE_PROVENANCE.txt`）**：
+
+- torch_npu 的 op_api/ATen 算子 host 侧提交**不在调用线程执行**：`OpCommand::RunOpApi`（OpCommand.cpp:183-228）在 `TASK_QUEUE_ENABLE=1`（**缺省 1**，OptionsManager.cpp:645）时经 `enCurrentNPUStream`（NPUStream.cpp:739-782）→ `Repository::Enqueue`，由 **consumer 线程**异步执行（NPUQueue.cpp `ReadQueue` 只在 `manager().Call()` 执行完后才推进 read_idx:493）。
+- `NPUStream::stream(false)`（NPUStream.cpp:838-847）返回**裸句柄、不排空任务队列**；官方隐式转换 `operator aclrtStream()` 与 `stream(true)` 才先 `MakeSureQueueEmpty`（NPUQueue.cpp:243-362，eventfd 阻塞到 ring 清空＝**host 提交边界**，非设备同步）。`ASCEND_LAUNCH_BLOCKING=1` → `GetTaskQueueEnable()=0`（OptionsManager.cpp:157-168/630-634）→ 内联执行＋逐算子同步——**这就是 blocking 腿恒对的机制**。
+- r152 launcher（`csrc/oscar/int2_op_launch_lse_fast_r152.cpp`，pristine md5 `a46aa35e076117a235aa4c080113da96`）全部 7 个直调入口都是「`stream(false)` → ATen（fill 哨兵/staging）→ **直接 ACLNN**」模式（129/137/139、254/255、543/544、604/605、656/657、1046/1047、1176/1186 行族）：直调在调用线程**立即提交**，可越过 consumer 尚未处理的哨兵 fill **与调用方的算子 staging**——同时解释 MIDCAP2 捕获 #2（lse 全 −9999＋out 垃圾）与首事件 q/kr/vr 0x7FFF（内核读到未写完的输入）。该服务姿态实际入口＝`oscar_middle_prep`（serve log `[R218-QBOUND] entry=oscar_middle_prep slot=1 ACTIVE`）。
+
+**三分对照实验（T2，x1080x1×12、默认 async、逐腿冷启动；窗口 lock log 01:33:21–01:43:03Z）**：
+
+| 腿 | 树 | 结果 | 裁定 |
+|---|---|---|---|
+| `p7a_base` | pristine | **11/12 坏** | 基线复现（与第 4 波一致） |
+| `p7b_bound` | 修复＝fill/staging 后、直调前 `stream(true)` 边界＋r/ex/lr 硬检查 | **0/12 坏**（0 TORCH_CHECK 触发） | **假设成立（因果）** |
+| `p7c_wrong` | 仅旧位置（fill 之前）`stream(false)→stream(true)` | **0/12 坏** | 见下「错误边混淆」 |
+
+- **H_A 任务未正确提交：证伪**（所有 r=0/lr=0；blocking 同码正确）。
+- **H_B 哨兵晚到覆盖（更准确：直调越过任务队列——哨兵与输入 staging 双重受害）：成立**（边界修复 0/12）。
+- **H_C 缓冲区复用（g_ws 跨层共享）：证伪**（bound 腿 g_ws 共享制不变即 0/12；无需复制 workspace）。
+- **错误边混淆（诚实记录）**：旧位置（fill 前）flush 也治愈本复现——它排空了深层积压，遗留「fill 单算子竞态」由 GetWorkspaceSize 的 host 耗时（~88µs/call 量级，r152 源注释 msprof）掩盖；但这**不是源码级顺序保证**（Enqueue 与直调之间无顺序原语），正确修复＝fill 之后的右边界。任务书「不能只把旧位置改 stream(true)」的警告被实验精确证实为「能治标、非保证」。
+
+**修复（T3，分支 `oscar-int2/launcher-commit-boundary` @ p7_tree，commit `74e0a67b2`，树内文件 md5 `c2ca87a90a15da012da964a7abab0fd8`）**：7 个直调入口统一加 `r218_qbound_flush`（＝官方 `stream(true)` 边界，含 flush 失败 nullptr 硬报错——nullptr 若流入 aclnn 即默认流跨流灾难）＋ GetWorkspaceSize r/ex 与 launch lr 的 TORCH_CHECK 硬报错（替代「只查 r 后继续消费输出」）＋ `qbound_stats()` 计数器＋每入口一次性 ACTIVE 标记。**保持默认异步**（无全局 ASCEND_LAUNCH_BLOCKING、无设备同步）；契约测试 `tests/ut/oscar/test_int2_launcher_commit_boundary.py`（4 项，静态顺序契约：边界必须在哨兵之后、直调之前，7 入口全覆盖＋lr 检查数守恒）。
+
+**开销记账**：flush 快路径 0.32µs/call（vs raw 0.09µs）；带 1 个挂起算子（生产典型）排空 ~16µs/call（独立微基准 `/tmp/flushbench`，NPU7）；36 层/步 ⇒ ~0.6ms/步理论上限，服务级吞吐三腿一致（4.8–4.9 tok/s，不可测差异）。
+
+**遗留边界（如实）**：修复覆盖「直调越过已入队 ATen 提交」这一边；未触及（也无需触及）g_ws 复用、quant/scatter 路径（自有 barrier 且 p6c/p6d 已证清白）、图模式 op_v3（本姿态 eager 未激活，边界同样已加）。
+
 ---
 
 ## 4. 任务 4 — 2.00× 容量对账（可复算）
@@ -447,3 +475,35 @@ flock /tmp/r218_npu7.lock -c \
 
 ### T5 — 上游 PR 复查（2026-10-24 晚）
 四 PR（#19577@9ce844dc5 / #19568@29291d83e / #19569@ece725142 / #19570@9f9f37244）均 draft/open、head 无变化、无新外部评审意见、checks 6 通过（ci-gate 为 maintainer 标签门）→ 无可处理反馈；LEDGER §七已更新三态列（上游已提交×4、准备好=m-port-full-ut@81295d899+17 prep-unit+capfix、#19552 closed）。未重复 dependency-review 提问（10-24T12:48Z 已问）；05+ 新上游 PR 维持等待 maintainer 回复。
+
+## 11. 第 5 波收尾（2026-10-25，主 Agent）
+
+### 上游 PR — 四 PR 全部 ready for review（无未完成作者事项）
+- **#19577**（01, release 基）：ready（0 未决线程；此前 DCO/标题已处理）。
+- **#19568**（02, main 基）：ready；2 线程已回复＋resolve；标题改
+  `[Attention][Feature] oscar: add the INT2 KV encoder (per-token-head affine, pure Torch) [2/22]`。
+- **#19569**（03, main 基）：ready；2 线程已回复＋resolve（引用既有修复提交）。
+- **#19570**（04, main 基，本轮评审修复）：**新提交 `314f9186e`**（fork 分支 `oscar-int2/m-pr-04`，
+  9f9f37244→314f9186e）落实 20 线程全部整改：
+  ① 全 raw pybind 入口补 `DeviceGuard`＋`NPUStreamGuard`（r152：launch_lse_fast/warm_ws/
+  middle_prep 全变体/middle_op_v3/scatter_int2/r144_read_counter；r98：launch_lse；含
+  oscar_middle_prep 专项缺 NPUStreamGuard 点）；
+  ② clip_idx 钳位 [1,D]；③ mid_len from_blob→torch::tensor；④ std::system(mkdir)×2→
+  std::filesystem::create_directories（error_code 出参，注入面清零）；⑤ g_ws/wsh
+  torch::empty try-catch（析构 acl 句柄后 rethrow，含 middle_prep 同型点）。
+  验证：双环境 cpp_extension 编译＋import 通过（torch_npu 2.10.0.post7 nightly 容器 +
+  CANN 9.0.0 runner）；六路 oscar_quant_kv vs 纯 Torch 逐位复验 all_bit_equal=true
+  （NPU 7 under flock，evidence ts 2026-10-25T01:45:24Z）。20 线程全部回复＋resolve。
+- 状态：四 PR 均 `OPEN + ready`；checks 通过（ci-gate 为 maintainer 标签门）。剩余为维护者
+  评审（外部等待）。
+
+### B 线产物验收＋发布（v4）
+- B 产物核验：`SHA256SUMS` 233/233 OK；`p6_compare.py` 修复版 sha
+  `fe2fce54440fb46f7ad99698d5f2b53177a7e46bc0691ffe756bcd7b36f4b6ba`（＝主 Agent 实跑版）；
+  `ref_reproduction_20261025.txt`（命令/退出码/完整输出，4 捕获 CPU 复现全 0）＋
+  `layout_sweep_20261025.py`；`PACKED_MANIFEST`/`RAW_MANIFEST` 拆分。
+- **P6 v4 包发布**：`r218_p6_async_evidence_20261025r2.tar.gz`
+  （sha256 `d986fdef9825d9ebeda64d12a786c2ee1f1b615acafa218945622278d9d35135`，74 内容文件；
+  v3 的 71 项中替换缺陷版脚本，＋ref_reproduction/layout_sweep/RAW_MANIFEST/README v4 版本块；
+  解包往返校验 73/73 OK）。**v3（`92ac574b…`）SUPERSEDED**。文章材料入口
+  `ARTICLE_MATERIALS_ENTRY.md` §5/§8/§9 已同步 v4＋四 PR ready 状态。
