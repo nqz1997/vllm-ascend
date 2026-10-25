@@ -528,27 +528,33 @@ flock /tmp/r218_npu7.lock -c \
 
 ## 12. 上游提交完整台账（2026-10-25 第 5 波主 Agent 终版）
 
-### 已提交（7 个正式上游 PR，全部 main 基）
+### 已提交（16 个开放 PR＝16 逻辑单元；head 为 2026-10-25 15:4xZ 复验值）
 
 | 单元 | PR | head | 依赖声明 | 状态 |
 |---|---|---|---|---|
-| 01 配置面 | [#19577](https://github.com/vllm-project/vllm-ascend/pull/19577) | `9ce844dc5` | ∅ | ready；DCO/pre-commit/main/cpu-ut 绿 |
+| 01 配置面 | [#19577](https://github.com/vllm-project/vllm-ascend/pull/19577) | `5a4265ce0` | ∅ | ready；作者侧修复轮后绿（paths/diag 归此） |
 | 02 KV 编码器 | [#19568](https://github.com/vllm-project/vllm-ascend/pull/19568) | `29291d83e` | ∅ | ready；同上 |
-| 03 旋转加载器 | [#19569](https://github.com/vllm-project/vllm-ascend/pull/19569) | `ece725142` | ∅（config 12 行归 01） | ready；同上 |
+| 03 旋转加载器 | [#19569](https://github.com/vllm-project/vllm-ascend/pull/19569) | `04303a2e0` | ∅（config 12 行归 01） | ready；同上 |
 | 04 vendored launchers | [#19570](https://github.com/vllm-project/vllm-ascend/pull/19570) | `96ef95c9a` | ∅（运行期 cpp_extension 构建） | ready；加固 314f9186e＋**异步边界修复**（§3.7 根因定谳，三分对照 11/12→0/12，60/60+sweep 20/20+UT139+capfix 849,280tok 复验）全 CI 绿 |
-| 05 helpers 重定位 | [#19728](https://github.com/vllm-project/vllm-ascend/pull/19728) | `7f26e73ec` | #19577+#19569（分支含依赖内容；正文附增量 diff 链接） | open；**全 CI 绿含 cpu-ut×2**；测试 37 passed，ruff/mypy 清洁 |
-| 06 ctx import hub | [#19729](https://github.com/vllm-project/vllm-ascend/pull/19729) | `0aff91b62` | #19577 | open；测试 20 passed；main 适配（attention_cp 元数据、剔除 release 专属 kvcomp/flashcomm2 再导出）；DCO/main 绿，pre-commit mypy 步在跑 |
-| 08 bmresolve | [#19732](https://github.com/vllm-project/vllm-ascend/pull/19732) | `edebe8823` | #19577+#19569+#19728（叠堆同上） | open；测试 43 passed（37 基座＋6 新）；mixin 裸注解块过 mypy --check-untyped-defs；首轮 CI 全包 mypy 抓 2 处 `_R144_TT_DYN += 1`（局部 --follow-imports skip 漏跨模块）→helpers 补 `dict[str, Any]` 注解复推 |
+| 05 helpers 重定位 | [#19728](https://github.com/vllm-project/vllm-ascend/pull/19728) | `24dc7d5ee` | #19577+#19569（分支含依赖内容；正文附增量 diff 链接） | open；cpu-ut=基础设施失败（pod 未上线零测试，重跑已请求）；作者侧 acquire/diag 修复归此 |
+| 06 ctx import hub | [#19729](https://github.com/vllm-project/vllm-ascend/pull/19729) | `b295725b6` | #19577 | open；绿；作者侧 /tmp 隔离修复归此 |
+| 08 bmresolve | [#19732](https://github.com/vllm-project/vllm-ascend/pull/19732) | `899823b8d` | #19577+#19569+#19728（叠堆同上） | open；绿（cpu-ut×2）；mixin 裸注解块先例；`_R144_TT_DYN` 注解修复已复推 |
+| 07+09 slotstate+bmupdate | [#19734](https://github.com/vllm-project/vllm-ascend/pull/19734) | `12f49fc6c` | +#19729 | open；绿（pre-commit 真败 attr-defined 已修） |
+| 10+12 r116+quantcache | [#19735](https://github.com/vllm-project/vllm-ascend/pull/19735) | `e1b3246358` | +#19568 | open；绿；R113 staging 缩容 realloc 属主修复（round3 bot 实锤） |
+| 11 staging | [#19739](https://github.com/vllm-project/vllm-ascend/pull/19739) | `2292049be` | +#19734 | open；绿 |
+| 13 bridge | [#19741](https://github.com/vllm-project/vllm-ascend/pull/19741) | `33bd46d92` | +#19739 | open；绿；counters `: int = 0` 属主修复在位 |
+| 14 middle_candidate | [#19742](https://github.com/vllm-project/vllm-ascend/pull/19742) | `9e3582f4f` | +#19741 | open；绿（bridge 刷新后）；`_R218_ROT_SEEN` registry 化 |
+| 15 middle_batched | [#19743](https://github.com/vllm-project/vllm-ascend/pull/19743) | `571bf4434d` | +#19735 | open；前序门全绿、cpu-ut 尾腿；r116 CANN 硬编码传播修复（round4 bot 实锤） |
+| 16 middle_exec+OGA（链汇合，逐字节携 02+10+12） | [#19746](https://github.com/vllm-project/vllm-ascend/pull/19746) | `4017c7e01` | +#19742+#19743 | open；绿（≤3.11 f-string×3、typos、`_fb` 句柄同名后） |
+| 17 decode | [#19747](https://github.com/vllm-project/vllm-ascend/pull/19747) | `251e8bccd` | +#19746 | open；绿；**TND packed-varlen 修复**（B≥2 曾全体读末条 KV；负控回归测试） |
+| 18 prefill | [#19750](https://github.com/vllm-project/vllm-ascend/pull/19750) | `5acaee8a9d` | +#19747 | open；绿；`_tt_plen`→`_tt_pref`、R166 折叠、phantom imports 改道 |
 
 注：#19552（01 的 release 基首投）已由 #19577（main 基）取代关闭。ci-gate fail＝维护者标签门（非代码失败），四 ready PR 同。
 
-### 未提交（逐项：依赖对象 / 阻塞依据 / 解除条件 / 已备内容）
+### 未提交（逐项：依赖对象 / 阻塞依据 / 解除条件 / 已备内容；07+09、10+12、11、13–18 已于第 6 波全部投递见上表）
 
 | 单元 | 依赖 | 阻塞依据 | 解除条件 | 已备 |
 |---|---|---|---|---|
-| 07 slotstate＋09 bmupdate | 1,3,5,6 | 依赖 5/6（#19728/29 刚投，未合入）；两者 import 互指不可分，须同一 PR | 05/06 任一被接受或维护者确认叠堆评审；即合入后 rebase 到 main | v4 链 `4d53a162`(+1355)/`007705a9`(+1970)；m-port 树适配版（slotstate 8 行适配） |
-| 10 ring mixin＋12 quantcache | 1,2,3,5,6 | 10 运行时依赖 12，须同 PR；12 引 02 编码器（已投） | 同上 | `2bc31f88`(+798)/`fc6a77f3`(+588)；quantcache 22 行适配 |
-| 11 staging / 13 bridge / 14 middlecand / 15 middlebatched / 16 middleexec+OGA / 17 decode / 18 prefill | 1,3,5,6（17 为 1,6） | 同上；均纯增量＋自有测试绿（11=4/13 无自有测试乘 19 审计/14=3/15=2/16=3/17=2/18=2） | 同上 | v4 链各 commit＋port 树逐字节同（13 bridge 33 行适配） |
 | 19 后端组装 | 1,2,3,5..18 | import 全部 12 个 mixin；差异会重复整个系列 | 05-18 合入 | `9ebddc05`(+1134) |
 | 20 v1 接线 | 19＋main 移植 | v4 版是 release 整文件重写（main 无意义）；适配版 2ee7126a1 | 19 合入 | m-port-full-ut 内适配版（+326） |
 | 21 kv_int2 注册 | 19＋main 移植 | 惰性挂 19；modelslim 已随上游 #14030 移 quantization/configs/ | 19 合入 | 5dd2239af（+321） |
