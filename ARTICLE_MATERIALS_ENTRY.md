@@ -251,46 +251,33 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
 - 单元 19-22 结构性阻塞（19 组装 import 全部 12 mixin；20-22 为 release 线适配、main 缺
   路径），本轮不投。
 
-## 11. main 线增量（2026-10-26 第 7 波——单元 19-22 提交＋最终树小规模功能回归；只作增量行）
-
-- **细拆链 22/22 齐全**：#19764(19 装配)/#19765(20 派发)/#19766(21 注册)/#19767(22 worker)
-  已全部转 **ready for review**（终版 head：m-pr-19=eeb34c4a5 / m-pr-20=49524a610 / m-pr-21=18a832f33 /
-  m-pr-22=868586798（21/22 末次仅 kv_int2 UT import 序收敛，无行为变化；e26e9e5ec/a7da582bd 为其直接前驱）**（wave-7b 全树修复＋两轮测试文件级修正后 head——test_kv_int2.py
-  I001 导入排序＋该文件自 19/20 树移除（其树无 kv_int2.py，mypy/cpu-ut 会假败；21/22
-  保留 blob c503b4238）——运行时文件零变化，下述 blob 闭环 9/9 已在该终版 head 复验
-  仍全等；此前六个分支一度被截断树头覆盖，已全部以完整树快进复原并逐树校验；
-  9a4104d71/c3ed26702 为过期中间头勿引）。#19764 依赖链已补 #19728（helpers）。
-  逐头 UT 诚实口径：19/20=130（其树不可能跑 kv_int2 UT）、21/22=141。
-- **最终树↔运行时闭环（blob 级 15/15 全等）**：m-pr-22 树内 9 个关键文件 blob ==
-  /tmp/mpr19_wt 工作树 == 被测容器 bind 树（attention_v1 git blob 1a322805，运行时
-  [R218ID] sha256[:16]=81f6adc0）；其余被测文件在各自所有者分支逐一相等
-  （config→m-pr-01、int2_quant→m-pr-02、ring/r116→m-pr-1012、attention_int2→m-pr-19、
-  prefill→m-pr-18）。懒建类属性修复（mixin 注解缺省令 hasattr 恒真→池恒 None→首请求
-  TypeError）落在所有者分支 m-pr-14/16 并传播至最终 tip（=被测容器树字节）。
-- **main 最终树小规模功能回归（2026-10-26；与冻结组合全量评测互不替代）**：同容器同树
-  INT2 24/24＋39/39＋60/60 响应结构有效（判据=有 choices 且无损坏标记，不等于答案正确）；
-  BF16 对照 21/21＋60/60 且确认 INT2 opt-out（无任何 INT2 加载横幅）。贪心(temp=0)同输入
-  同参数 BF16/INT2 配对：45/60 逐 token 全同、15/60 首 token 分岔、0 部分措辞漂移（双峰，
-  无渐进漂移）；BF16 响应内并行样本 100% 自一致，INT2 36/60；INT2 14/201 样本非 ASCII
-  重复尾（BF16 0/201，集中出现于 fin_tree 文件集）。跨 rep：INT2 全部文件 4-6 态；**更正（addendum §B）：撤回此前
-  "BF16 3/7 两态翻转"口径——两"态"仅 24-token 截断边界差 1 token，BF16 实际 7/7
-  单一吸引子 {FieldType}；15 条分歧=恰 5 提示×3 rep 逐提示确定性翻转（替代循环
-  token 仅 backstage/subrange/itemList 混杂 3 种，均不入 BF16 201 样本分布）。**槽复用仅调度器级证据（单 EngineCore 实例跨 39 请求、
-  Running 0↔8 起落、NS=32 池容量不可能无复用装下 39 请求），无槽号级日志（诊断 env
-  关闭）——如实标注，不以请求数冒充复用覆盖。fin_tree_int2 电池文件首行 1 条 ERR 为
-  修复前（01:33Z getattr 崩溃期）残留（runner 追加不截断；02:20:46Z 实跑恰 60 次 POST
-  全 200、单次引擎初始化），非最终树活失败。运行环境与 PR 树差异（完整块见
-  WAVE7_SERVICE_ADDENDUM_20261026.md §E——不宣称"运行环境与 PR 全同"）：CANN
-  9.2.0、vllm_ascend_C=eeebeb7c（/vllm-workspace 9.2 构建、gitignored 非 PR 内容）、
-  OPP-shim+R218_EXTRA_OPP（R144 冻结链）、ops/layernorm.py 容器限定 shim
-  （aclnnAddRmsNormBias 缺符号→npu_rms_norm 回退，仅测试容器，不进任何 PR 树）、
-  serve posture 环境集；全树 diff 已核（4583 blob、路径集相同、仅 8 处 blob 差=7 运行
-  时 overlay+1 测试 I001，无意外缺件）。
-- **三组证据分列（不互换）**：① 冻结组合全量精度/性能/容量（§1-§6，本页不变）；
-  ② main 最终树小规模功能回归（本节，2026-10-26）；③ 全源自建验证（自建内核/框架包对
-  冻结参考二进制的契约电池与 serve parity，见 §8 证据分支及 §9）。
-- 维护者等待（单列）：20 个开放 PR 的 `ci-gate` 标签门；#19728 cpu-ut 基础设施失败重跑
-  （不标通过）。
-
 ---
-冻结：子 Agent B（第 5 波）2026-10-25；第 6/7 波增量按 §10/§11 追加；本页不改任何既有数值。
+冻结：子 Agent B（第 5 波）2026-10-25；第 6 波增量按 §10 追加；本页不改任何既有数值。
+
+## 12. 终版发布材料汇总（2026-10-26 05:5xZ；技术文章由 GPT 撰写，本节为其事实底稿）
+
+### 12.1 术语与版本对应表（勿混用）
+| 组合 | 版本锚 | 用途 |
+|---|---|---|
+| 冻结组合（v4 链 overlay） | §1.1 身份＋evidence pack r218_evidence_20261022_* | 全量精度/性能/容量数字唯一来源（§2-§6） |
+| **同步上游 main 后的集成 tip** | fork `oscar-int2/m-pr-22`@**bfad514b0**（tree `6a8b6c444c63…`，attention_v1 sha256[:16]=`9eb603e3b10ea866`） | 小规模功能回归＋20 PR 提交载体；**上游尚未合入，非"已合并 main"** |
+| 合并前集成 tip（历史锚） | `a7da582bd`（attention_v1 `81f6adc0`） | 13 文件生命周期电池证据锚（内容为 bfad514b0 的字节子集，我方文件） |
+
+### 12.2 20 PR 链接表（全部开放；Ready=可评审，**非生产验收通过**）
+#19577@c1d1772b5 · #19568@bc7bd8578 · #19569@04303a2e0 · #19570@96ef95c9a（01-04 ready，全 CI 绿）｜#19728（cpu-ut=基建重跑待办）· #19729 · #19732 · #19734 · #19735 · #19739 · #19741 · #19742 · #19743 · #19746 · #19747 · #19750（05-18，ci-gate=维护者标签门）｜**19-22（同步 main 后）**：#19764@25bfa36fb · #19765@bb488d49e · #19766@a5c2c53b0 · #19767@bfad514b0（四头 pre-commit/DCO/main 绿；cpu-ut 64/65/66 双腿绿、67 在跑；DCO 合并豁免成立）。01-18 各头以 /tmp/r218_wave6_state.md 与 PR 页为准（报告时重验）。
+
+### 12.3 质量判读（三分离；详见 WAVE7_SERVICE_ADDENDUM_20261026.md）
+- **答案正确性**：服务级答案证据唯一来源=冻结组合评测组（核心六道 INT2≈BF16）；集成 tip 电池为合成探针无语义答案，HTTP 200/choices 存在≠精度通过；logprobs 近并列（探针待跑）只解释首 token 分岔成因，**不作为答案正确性证明**。
+- **异常重复/截断**：循环续写=贪心+短帽下基线行为（BF16 201/201 同循环）；截断边界 ±1 token=长度伪差；INT2 特有=25% 请求（5/20 提示，逐提示稳定）选择 3 个替代循环 token（不在 BF16 分布内）——**已特征化的行为差异，保留 OPEN**（边际量化待 lp_probe）；非 ASCII=循环 token 字节内容，本身不判错。
+- **输出一致性**：INT2↔BF16 45/60 逐 token 全同、15/60 首 token 岔、0 措辞渐变；响应内自一致 INT2 36/60 vs BF16 60/60；跨 rep INT2 多态。
+- 证据分层：**新 tip 8 文件电池**（待 ranchor）与**旧 tip 13 文件生命周期电池**（已跑，39/39 结构有效＋调度器级槽复用）分别列示，不合并覆盖范围。
+
+### 12.4 吞吐/内存/瓶颈与未解项（全部引自冻结组合，不改数）
+- 吞吐/内存：§3/§4（同 GMU 容量 8.00×、decode 2.2-2.7× slow、e2e 2.4-3.7×）；图与 CSV=r6 包 figs/（§5）。
+- 瓶颈证据：middle kernel 209ms/步地板＋host gap 构成（§6/ADDENDUM §10.5）；未解项=host gap 构成、12.7× 成因、16K 未采样、INT2 首 token 分岔边际（新增）。
+- OPEN 清单：跨代状态残留（NS=1 长 ctx）、INT2 批量分组内核地板、集成 tip 电池双锚注记待 ranchor 后由 PR 侧发布。
+
+### 12.5 证据包
+- 冻结组合包：/tmp/r218_pack/r218_evidence_20261022_0649.tar.gz 与 evidence_pack/r218_evidence_20261022_1024（终版；SHA256 于包内 MANIFEST）
+- wave-7 归档：/home/n00928095/R218_UPSTREAM_WORK/delivery/r218_wave7_final/（22+2 文件：电池原始输出、身份、PAIRED/ANSWER_CHECK 分析、全树 diff 映射）
+- 证据分支：github.com/nqz1997/vllm-ascend tree `r218-evidence/20261026`（ARTICLE+ADDENDUM+PR_ADVANCE；本节发布后以读回 SHA 为准）
