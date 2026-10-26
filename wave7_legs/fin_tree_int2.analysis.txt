@@ -1,0 +1,2 @@
+/tmp/r218_async_diag/battery_fin_tree_int2.txt ragged ERR
+total=61 bad=1
