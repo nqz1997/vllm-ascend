@@ -267,14 +267,28 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
 #19577@c1d1772b5 · #19568@bc7bd8578 · #19569@04303a2e0 · #19570@96ef95c9a（01-04 ready，全 CI 绿）｜#19728（cpu-ut=基建重跑待办）· #19729 · #19732 · #19734 · #19735 · #19739 · #19741 · #19742 · #19743 · #19746 · #19747 · #19750（05-18，ci-gate=维护者标签门）｜**19-22（同步 main 后）**：#19764@25bfa36fb · #19765@bb488d49e · #19766@a5c2c53b0 · #19767@bfad514b0（四头 pre-commit/DCO/main 绿；cpu-ut 64/65/66 双腿绿、67 一腿失败原因待确认（runner 启动失败类）另一腿在跑；DCO 合并豁免成立）。01-18 各头以 /tmp/r218_wave6_state.md 与 PR 页为准（报告时重验）。
 
 ### 11.3 质量判读（三分离；详见 WAVE7_SERVICE_ADDENDUM_20261026.md）
-- **答案正确性**：服务级答案证据唯一来源=冻结组合评测组（核心六道 INT2≈BF16）；集成 tip 电池为合成探针无语义答案，HTTP 200/choices 存在≠精度通过；logprobs 近并列（探针待跑）只解释首 token 分岔成因，**不作为答案正确性证明**。
+- **答案正确性**：服务级答案证据唯一来源=冻结组合评测组（核心六道 INT2≈BF16）；集成 tip 电池为合成探针无语义答案，HTTP 200/choices 存在≠精度通过；logprobs 边际已测（lp_probe 2026-10-26：INT2 top1–top2 边际 0.75–1.25 nat vs BF16 0.50–0.63；仅观测，机制未证）——**不作为答案正确性证明，分岔机制保留 OPEN**（早稿『top-5 全同/runner-up promotion 已证』已撤回：long1/s4 候选仅 4/5 共同、探针未捕获翻转实例）。
 - **异常重复/截断**：循环续写=贪心+短帽下基线行为（BF16 201/201 同循环）；截断边界 ±1 token=长度伪差；INT2 特有=25% 请求（5/20 提示，逐提示稳定）选择 3 个替代循环 token（不在 BF16 分布内）——**已特征化的行为差异，保留 OPEN**（边际量化待 lp_probe）；非 ASCII=循环 token 字节内容，本身不判错。
 - **输出一致性**：INT2↔BF16 45/60 逐 token 全同、15/60 首 token 岔、0 措辞渐变；响应内自一致 INT2 36/60 vs BF16 60/60；跨 rep INT2 多态。
 - 证据分层：**新 tip 8 文件电池**与**旧 tip 13 文件生命周期电池**（已跑，39/39 结构有效＋调度器级槽复用）分别列示，不合并覆盖范围。
-  **截至本节发布时点（2026-10-26 06:1xZ）：lp_probe 与 ranchor 均未执行＝BLOCKED_DEVICE**
-  （dev6/7 被非本项目容器负载持续占用 ~52GB；对等 pid 保护未触碰）。待执行命令与续接方式见
-  /tmp/r218_wave6_state.md round L（lp_probe=2e watcher 触发 /tmp/lp_probe.sh；ranchor=/tmp/ranchor_leg.sh，
-  ID 门 9eb603e3；可判分最小集=/tmp/gradeable/，6 题严格判分）。**"已准备"不等于"已验证"。**
+  **设备窗口已取得并完成（2026-10-26 07:0x–07:45Z，dev5 空闲窗口；对等 pid 未触碰；本段取代早前
+  BLOCKED_DEVICE 记录——dev6/7 被非本项目容器占用期间未借用任何旧树/冻结组合结果）**：
+  - **run B＝serve-regression 锚（bfad514b0 内容，banner 9eb603e3）**：ranchor 8 文件×3rep
+    **INT2 24/24 bad=0＋BF16 24/24 bad=0**（按 created 纪元重数；battery 文件跨轮 append，打印
+    total=48=两轮之和）；身份横幅 [R112-FAST] r113.orch.v9+r145v3+r218p7bound＋[R218-QBOUND]
+    oscar_middle_prep slot=1 ACTIVE＋[R218ROT] LOADED（BF16 腿=[R218ID]-only 退出证明）。
+    **范围限定**：验证对象＝『PR 框架＋指定预编译扩展＋容器 shim＋冻结内核』的有限回归——launcher .so
+    d8a7fe61/bridge .so b01928f6 为容器缓存 JIT 制品，**源码→二进制对应关系无法证明＝UNKNOWN**
+    （产出该制品的 bind 树 cpp 字节不可恢复；现盘面 cpp daf02231224ce5b0/8f8011133d1a34cc 来自
+    oscar-int2/launcher-commit-boundary，经 mtime 老化直接加载缓存 .so）；layernorm CT-SHIM v2
+    5712c8db 为重建（原件 6f17ab3d 字节不可恢复）；_build_info.py 为按 setup.py 配方生成（上游 CI
+    亦生成，非 PR 缺陷）。
+  - **六题判分（run B，温度 0/24 token；原始规则=大小写不敏感子串包含）**：关键词命中 INT2 6/6
+    ==BF16 6/6——**此为『关键词命中率』，非严格答案正确率**；严格首答（4 needle+ctrl_fox1 可判）：
+    INT2 4/5 vs BF16 5/5，INT2 唯一失分=ctrl_fox1 首答『the dog.』（brown 仅后文出现）；needle
+    **目标标识命中 4/4**、**完整输出==BF16 3/4**（mix2 标识后继续分叉：INT2 在靶重复 vs BF16 泛句
+    填充）。run A（无 launcher/bridge 回落组合）关键词 3/6、标识 1/4——**仅证明不同组合输出不同，
+    不构成『非 tip 缺陷』的证据**。完整输入/规则/脚本与逐题表见 v2 增量包 REGRADE_SIX_PROMPTS_20261026.md。
   #19767@bfad514b0 cpu-ut(v0.31.0 腿)＝**失败原因待确认**：可证证据＝注记仅含自建 runner 容器启动
   失败信息（作者侧重跑请求 403=admin）；该 run 的运行/任务日志不可取得——**日志不可取得本身不能证明
   零测试失败**。与 #19728 同列基建类待确认、单列外部等待；不影响如实报告 PR 已提交。
@@ -288,7 +302,7 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
 - 瓶颈证据：**profiler ON 条件下，中段 kernel 观测耗时约 209ms/步**（§6/ADDENDUM §10.5）；
   **host gap 内部构成保持未定位**（跨 ON/OFF 条件相减的耗时分解已撤回，不在此恢复）。
 - OPEN 清单：host gap 构成、12.7× 成因、16K 未采样、跨代状态残留（NS=1 长 ctx）、INT2 批量分组
-  内核地板、INT2 首 token 分岔边际（lp_probe 在跑）。
+  内核地板、INT2 首 token 分岔机制（lp_probe 边际已测 0.75–1.25 vs 0.50–0.63 nat，机制仍 OPEN）。
 
 ### 11.5 证据包
 - 冻结组合包：/tmp/r218_pack/r218_evidence_20261022_0649.tar.gz 与 evidence_pack/r218_evidence_20261022_1024（终版；SHA256 于包内 MANIFEST）
@@ -297,5 +311,13 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
   `r218_wave7_service_evidence_20261026.tar.gz`（raw URL 可下载；42,039 字节；
   **SHA256＝21b015b6fef7addd14d95110f126f58ad90cc5c68598de98ca4703bc18c864f2**）；
   内容=w7wA/B/C＋fin_tree 双模式电池原始输出、身份横幅、PAIRED/ANSWER_CHECK 分析、
-  tree_overlay_map 全树对账、HANDOFF、serve 日志（ranchor/六题判分结果为后续增量包）。
+  tree_overlay_map 全树对账、HANDOFF、serve 日志（ranchor/六题判分结果见下）。
+- **重锚+六题增量包（当前有效=v2）**：`r218-evidence/20261026` 分支 `r218_reanchor_evidence_20261026_v2.tar.gz`
+  （**SHA256＝500c50765d5e85c3280eb34d1c769da854e6d4aa1a42e137aa1e694cb317b611**；47 文件 MANIFEST
+  逐项校验全 OK，MANIFEST 自身排除、README/输入/判分脚本纳入）；内容=runB/runA ranchor 电池＋身份＋
+  组合记录、六题原始输出＋完整输入＋预注册规则＋v2 分层重算、lp 边际（含撤回更正）、事故与披露记录。
+  **v1 包 `r218_reanchor_evidence_20261026.tar.gz`（9c291491…）保留为历史版本**，其『top-5 全同/
+  runner-up promotion 已证/INT2 6/6=严格正确』表述已被 v2 更正。PR 头（2026-10-26 08:2xZ 远端实测）：
+  #19764@25bfa36fb · #19765@bb488d49e · #19766@a5c2c53b0 · #19767@bfad514b0（均 open/非 draft/栈式
+  mergeable_state=blocked=依赖栈，符合预期）。
 - 证据分支：github.com/nqz1997/vllm-ascend tree `r218-evidence/20261026`（ARTICLE+ADDENDUM+PR_ADVANCE；本节发布后以读回 SHA 为准）

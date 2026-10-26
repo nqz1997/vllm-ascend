@@ -1,0 +1,62 @@
+R218 lp_probe logit-margin analysis (2026-10-26; 4 prompts x 6 tokens, temp=0, logprobs=5, same input/params; dev5)
+purpose: explain the prompt-stable first-token divergence (15/60) previously characterized; NOT a correctness proof.
+
+== div2
+   text int2=' FieldType FieldType FieldType FieldType FieldType FieldType'
+   text bf16=' FieldType FieldType FieldType FieldType FieldType FieldType'
+  pos0: INT2 top1=' FieldType'(-3.427) #2=' itemList'(-4.177) gap=0.750
+        BF16 top1=' FieldType'(-3.638) #2=' itemList'(-4.263) gap=0.625
+  pos1: INT2 top1=' FieldType'(-3.447) #2=' itemList'(-4.197) gap=0.750
+        BF16 top1=' FieldType'(-3.634) #2=' itemList'(-4.259) gap=0.625
+  pos2: INT2 top1=' FieldType'(-3.433) #2=' itemList'(-4.183) gap=0.750
+        BF16 top1=' FieldType'(-3.623) #2=' itemList'(-4.248) gap=0.625
+  top5-token sets: int2-only=[] bf16-only=[] common=5
+
+== div3
+   text int2=' FieldType FieldType FieldType FieldType FieldType FieldType'
+   text bf16=' FieldType FieldType FieldType FieldType FieldType FieldType'
+  pos0: INT2 top1=' FieldType'(-3.427) #2=' itemList'(-4.177) gap=0.750
+        BF16 top1=' FieldType'(-3.638) #2=' itemList'(-4.263) gap=0.625
+  pos1: INT2 top1=' FieldType'(-3.447) #2=' itemList'(-4.197) gap=0.750
+        BF16 top1=' FieldType'(-3.634) #2=' itemList'(-4.259) gap=0.625
+  pos2: INT2 top1=' FieldType'(-3.433) #2=' itemList'(-4.183) gap=0.750
+        BF16 top1=' FieldType'(-3.623) #2=' itemList'(-4.248) gap=0.625
+  top5-token sets: int2-only=[] bf16-only=[] common=5
+
+== long1
+   text int2=' FieldType FieldType FieldType FieldType FieldType FieldType'
+   text bf16=' FieldType FieldType FieldType FieldType FieldType FieldType'
+  pos0: INT2 top1=' FieldType'(-3.102) #2=' itemList'(-4.102) gap=1.000
+        BF16 top1=' FieldType'(-3.593) #2=' itemList'(-4.218) gap=0.625
+  pos1: INT2 top1=' FieldType'(-3.119) #2=' itemList'(-4.057) gap=0.938
+        BF16 top1=' FieldType'(-3.612) #2=' itemList'(-4.237) gap=0.625
+  pos2: INT2 top1=' FieldType'(-3.173) #2=' itemList'(-4.110) gap=0.938
+        BF16 top1=' FieldType'(-3.584) #2=' itemList'(-4.209) gap=0.625
+  top5-token sets: int2-only=[' subrange'] bf16-only=['[item'] common=4
+
+== s4
+   text int2=' FieldType FieldType FieldType FieldType FieldType FieldType'
+   text bf16=' FieldType FieldType FieldType FieldType FieldType FieldType'
+  pos0: INT2 top1=' FieldType'(-2.902) #2=' itemList'(-4.089) gap=1.188
+        BF16 top1=' FieldType'(-3.875) #2=' itemList'(-4.375) gap=0.500
+  pos1: INT2 top1=' FieldType'(-2.897) #2=' itemList'(-4.147) gap=1.250
+        BF16 top1=' FieldType'(-3.824) #2='SENS'(-4.386) gap=0.562
+  pos2: INT2 top1=' FieldType'(-2.907) #2=' itemList'(-4.094) gap=1.188
+        BF16 top1=' FieldType'(-3.825) #2='SENS'(-4.387) gap=0.562
+  top5-token sets: int2-only=[' subrange'] bf16-only=['[item'] common=4
+
+
+---
+## CORRECTION 2026-10-26 (post external review) — retraction of two claims
+1. RETRACTED "top-5 候选集跨模式全同": the raw tables above show common=5 only
+   for div2/div3; **long1 and s4 have common=4** (int2-only ' subrange',
+   bf16-only '[item'). The blanket claim was an over-generalization by the
+   summarizer (this file's tables were always correct; the README/summary
+   wording was not).
+2. RETRACTED "机制=runner-up promotion (已证)": no first-token flip instance
+   was ever captured — all 8 probe continuations were identical across modes
+   (see "8/8 identical"). The margin observation (INT2 gaps 0.75–1.25 nat vs
+   BF16 0.50–0.63) is real, but it is consistent with more than one
+   mechanism. **First-token divergence mechanism remains OPEN.** No new
+   experiments were run for this correction; observations above are retained
+   unchanged.

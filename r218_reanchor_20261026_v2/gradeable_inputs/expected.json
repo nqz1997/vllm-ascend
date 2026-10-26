@@ -1,0 +1,20 @@
+{
+ "needle_mid1": {
+  "expected_contains": "ZEBRA-47"
+ },
+ "needle_mid2": {
+  "expected_contains": "MANGO-88"
+ },
+ "needle_mix1": {
+  "expected_contains": "QUARTZ-12"
+ },
+ "needle_mix2": {
+  "expected_contains": "TULIP-35"
+ },
+ "ctrl_fox1": {
+  "expected_contains": "brown"
+ },
+ "ctrl_fox2": {
+  "expected_contains": "dog"
+ }
+}

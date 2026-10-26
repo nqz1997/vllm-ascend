@@ -1,0 +1,22 @@
+===== runB =====
+name          | keyword-hit(I/B) | first-token-strict(I/B) | full_text_I==B
+needle_mid1  | True/True            | True/True ("ZEBRA-47."/"ZEBRA-47.") | True
+needle_mid2  | True/True            | True/True ("MANGO-88."/"MANGO-88.") | True
+needle_mix1  | True/True            | True/True ("QUARTZ-12."/"QUARTZ-12.") | True
+needle_mix2  | True/True            | True/True ("TULIP-35."/"TULIP-35.") | False
+ctrl_fox1    | True/True            | False/True ("the"/"brown.") | False
+ctrl_fox2    | True/True            | False/False ("quick"/"lazy") | False
+== SUMMARY runB: keyword-hit INT2 6/6 BF16 6/6 | first-token INT2 4/6 BF16 5/6 | full-text-same 3/6 | needles: id-hit 4/4, full-same 3/4
+  needle_mid1: kw=True/True first="ZEBRA-47."/"ZEBRA-47." strict=True/True fullsame=True
+  needle_mid2: kw=True/True first="MANGO-88."/"MANGO-88." strict=True/True fullsame=True
+  needle_mix1: kw=True/True first="QUARTZ-12."/"QUARTZ-12." strict=True/True fullsame=True
+  needle_mix2: kw=True/True first="TULIP-35."/"TULIP-35." strict=True/True fullsame=False
+  ctrl_fox1: kw=True/True first="the"/"brown." strict=False/True fullsame=False
+  ctrl_fox2: kw=True/True first="quick"/"lazy" strict=False/False fullsame=False
+== SUMMARY runA: keyword-hit INT2 3/6 BF16 6/6 | first-token INT2 1/6 BF16 5/6 | full-text-same 0/6 | needles: id-hit 1/4, full-same 0/4
+  needle_mid1: kw=False/True first="ZEBRA."/"ZEBRA-47." strict=False/True fullsame=False
+  needle_mid2: kw=False/True first="MATH."/"MANGO-88." strict=False/True fullsame=False
+  needle_mix1: kw=False/True first="QUICKBROWNFOXJUMPSOVERTHELAZYDOG."/"QUARTZ-12." strict=False/True fullsame=False
+  needle_mix2: kw=True/True first="TULIP-35."/"TULIP-35." strict=True/True fullsame=False
+  ctrl_fox1: kw=True/True first="the"/"brown." strict=False/True fullsame=False
+  ctrl_fox2: kw=True/True first="quick"/"lazy" strict=False/False fullsame=False
