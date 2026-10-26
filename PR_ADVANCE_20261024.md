@@ -551,14 +551,14 @@ flock /tmp/r218_npu7.lock -c \
 
 注：#19552（01 的 release 基首投）已由 #19577（main 基）取代关闭。ci-gate fail＝维护者标签门（非代码失败），四 ready PR 同。
 
-### 未提交（逐项：依赖对象 / 阻塞依据 / 解除条件 / 已备内容；07+09、10+12、11、13–18 已于第 6 波全部投递见上表）
+### 第 7 波投递（2026-10-26）：单元 19–22 已全部投递为 Draft（最终 main 集成树 mpr19_wt 组装＝最新整改 01–18 head ＋ 适配后的 19–22；逐头 UT 130/130/141/141、ruff/mypy/py3.11 三清；ruff-format 补正与 configs/__init__.py 意外覆盖修复以快进提交追平，树＝重建栈逐字节）
 
 | 单元 | 依赖 | 阻塞依据 | 解除条件 | 已备 |
 |---|---|---|---|---|
-| 19 后端组装 | 1,2,3,5..18 | import 全部 12 个 mixin；差异会重复整个系列 | 05-18 合入 | `9ebddc05`(+1134) |
-| 20 v1 接线 | 19＋main 移植 | v4 版是 release 整文件重写（main 无意义）；适配版 2ee7126a1 | 19 合入 | m-port-full-ut 内适配版（+326） |
-| 21 kv_int2 注册 | 19＋main 移植 | 惰性挂 19；modelslim 已随上游 #14030 移 quantization/configs/ | 19 合入 | 5dd2239af（+321） |
-| 22 worker 生命周期＋池帽 | 21＋main 移植 | model_runner_v1 在 main 不存在（#18863 移 worker/v1/）；接线实测 :1111/:6551/:6698 | 21 合入 | 7b7eafa92（+552） |
+| 19 后端装配 | [#19764](https://github.com/vllm-project/vllm-ascend/pull/19764) `m-pr-19`@`f743c2d14` | 依赖=#19750 全链；文件=attention_int2+batchmeta_resolve+middle_batched+test_int2_assembly（53 方法审计）；UT 130 | **Draft**：集成 serve 回归（默认异步/混合长度/生命周期/TND/BF16）进行中，绿后转 ready |
+| 20 v1 派发 | [#19765](https://github.com/vllm-project/vllm-ascend/pull/19765) `m-pr-20`@`41d0cd64d` | 依赖=#19764；int2_per_token_head 构造接纳（页内自持 scale，无 C8 式静态检查点）＋惰性 class-surgery 转发；hamming 分支不移植（main 无该属性）；UT 130 | 同上 Draft |
+| 21 kv_int2 注册 | [#19766](https://github.com/vllm-project/vllm-ascend/pull/19766) `m-pr-21`@`3da02b4fa` | 依赖=#19765；scheme INT2_PER_TOKEN_HEAD＋modelslim 谓词/选支/后缀图＋kv-cache-dtype 补丁；UT 141（+11 test_kv_int2）；⚠首投曾误覆 configs/__init__.py，已于 `edd10ca9c` 恢复基线内容、`3da02b4fa` 载 r118 importlib 修复（CI 真环境 mypy 门） | 同上 Draft |
+| 22 worker/v1 | [#19767](https://github.com/vllm-project/vllm-ascend/pull/19767) `m-pr-22`@`8211bd7ec` | 依赖=#19766；runner 钩子/生命周期记账/门控探针＋worker 设备门＋utils 派发助手；BF16 默认路径不变；UT 141 | 同上 Draft（22/22 链尖） |
 | capfix 容量记账 | m-port-full-ut＋01 | worker.py:663 `from vllm_ascend.oscar.config import get_oscar_config`（=01）；改动落点在 22 移植引入的 INT2 块内 | 22 合入＋#19577 合入；且异步修复已进（#19570 96ef95c9a）——正式姿态验证已完成（p9：849,280 tok＝BF16 5.54×，不升格产品结论） | fork `oscar-int2/capfix-int2-spec@db6398286`（146 passed）；patch `8289c8bf…` |
 
 **叠堆评审机制现状**：2026-10-24 12:48Z 已在维护者线程询问依赖评审方式，无人工回复（仅 bots）。05/06/08 已按「依赖声明＋增量 diff 链接＋自含可测 head」形式投递，作为该机制的事实探针；其余 07-18 视其反响随后续波投递（配方已三轮验证：port 树适配版文件＋m-pr 叠基＋ruff 0.14/mypy --check-untyped-defs/pytest 三清＋gh api blob 推送；08 增补 mixin 裸注解块先例过 mypy attr-defined）。
