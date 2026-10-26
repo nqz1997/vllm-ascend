@@ -272,14 +272,20 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
   BF16 对照 21/21＋60/60 且确认 INT2 opt-out（无任何 INT2 加载横幅）。贪心(temp=0)同输入
   同参数 BF16/INT2 配对：45/60 逐 token 全同、15/60 首 token 分岔、0 部分措辞漂移（双峰，
   无渐进漂移）；BF16 响应内并行样本 100% 自一致，INT2 36/60；INT2 14/201 样本非 ASCII
-  重复尾（BF16 0/201，集中出现于 fin_tree 文件集）。跨 rep：BF16 4/7 文件全同、3/7 两态
-  翻转；INT2 全部文件 4-6 态。槽复用仅调度器级证据（单 EngineCore 实例跨 39 请求、
+  重复尾（BF16 0/201，集中出现于 fin_tree 文件集）。跨 rep：INT2 全部文件 4-6 态；**更正（addendum §B）：撤回此前
+  "BF16 3/7 两态翻转"口径——两"态"仅 24-token 截断边界差 1 token，BF16 实际 7/7
+  单一吸引子 {FieldType}；15 条分歧=恰 5 提示×3 rep 逐提示确定性翻转（替代循环
+  token 仅 backstage/subrange/itemList 混杂 3 种，均不入 BF16 201 样本分布）。**槽复用仅调度器级证据（单 EngineCore 实例跨 39 请求、
   Running 0↔8 起落、NS=32 池容量不可能无复用装下 39 请求），无槽号级日志（诊断 env
   关闭）——如实标注，不以请求数冒充复用覆盖。fin_tree_int2 电池文件首行 1 条 ERR 为
   修复前（01:33Z getattr 崩溃期）残留（runner 追加不截断；02:20:46Z 实跑恰 60 次 POST
-  全 200、单次引擎初始化），非最终树活失败。容器限定差异（PR 证据评注披露）：
-  ops/layernorm.py aclnnAddRmsNormBias 回退 shim（仅测试容器 CANN 9.2.0 缺该符号，
-  上游 CI 镜像含之；不进任何 PR 树）。
+  全 200、单次引擎初始化），非最终树活失败。运行环境与 PR 树差异（完整块见
+  WAVE7_SERVICE_ADDENDUM_20261026.md §E——不宣称"运行环境与 PR 全同"）：CANN
+  9.2.0、vllm_ascend_C=eeebeb7c（/vllm-workspace 9.2 构建、gitignored 非 PR 内容）、
+  OPP-shim+R218_EXTRA_OPP（R144 冻结链）、ops/layernorm.py 容器限定 shim
+  （aclnnAddRmsNormBias 缺符号→npu_rms_norm 回退，仅测试容器，不进任何 PR 树）、
+  serve posture 环境集；全树 diff 已核（4583 blob、路径集相同、仅 8 处 blob 差=7 运行
+  时 overlay+1 测试 I001，无意外缺件）。
 - **三组证据分列（不互换）**：① 冻结组合全量精度/性能/容量（§1-§6，本页不变）；
   ② main 最终树小规模功能回归（本节，2026-10-26）；③ 全源自建验证（自建内核/框架包对
   冻结参考二进制的契约电池与 serve parity，见 §8 证据分支及 §9）。
