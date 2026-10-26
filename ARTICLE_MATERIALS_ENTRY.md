@@ -264,7 +264,7 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
 | 合并前集成 tip（历史锚） | `a7da582bd`（attention_v1 `81f6adc0`） | 13 文件生命周期电池证据锚（内容为 bfad514b0 的字节子集，我方文件） |
 
 ### 11.2 20 PR 链接表（全部开放；Ready=可评审，**非生产验收通过**）
-#19577@c1d1772b5 · #19568@bc7bd8578 · #19569@04303a2e0 · #19570@96ef95c9a（01-04 ready，全 CI 绿）｜#19728（cpu-ut=基建重跑待办）· #19729 · #19732 · #19734 · #19735 · #19739 · #19741 · #19742 · #19743 · #19746 · #19747 · #19750（05-18，ci-gate=维护者标签门）｜**19-22（同步 main 后）**：#19764@25bfa36fb · #19765@bb488d49e · #19766@a5c2c53b0 · #19767@bfad514b0（四头 pre-commit/DCO/main 绿；cpu-ut 64/65/66 双腿绿、67 在跑；DCO 合并豁免成立）。01-18 各头以 /tmp/r218_wave6_state.md 与 PR 页为准（报告时重验）。
+#19577@c1d1772b5 · #19568@bc7bd8578 · #19569@04303a2e0 · #19570@96ef95c9a（01-04 ready，全 CI 绿）｜#19728（cpu-ut=基建重跑待办）· #19729 · #19732 · #19734 · #19735 · #19739 · #19741 · #19742 · #19743 · #19746 · #19747 · #19750（05-18，ci-gate=维护者标签门）｜**19-22（同步 main 后）**：#19764@25bfa36fb · #19765@bb488d49e · #19766@a5c2c53b0 · #19767@bfad514b0（四头 pre-commit/DCO/main 绿；cpu-ut 64/65/66 双腿绿、67 一腿失败原因待确认（runner 启动失败类）另一腿在跑；DCO 合并豁免成立）。01-18 各头以 /tmp/r218_wave6_state.md 与 PR 页为准（报告时重验）。
 
 ### 11.3 质量判读（三分离；详见 WAVE7_SERVICE_ADDENDUM_20261026.md）
 - **答案正确性**：服务级答案证据唯一来源=冻结组合评测组（核心六道 INT2≈BF16）；集成 tip 电池为合成探针无语义答案，HTTP 200/choices 存在≠精度通过；logprobs 近并列（探针待跑）只解释首 token 分岔成因，**不作为答案正确性证明**。
@@ -275,15 +275,27 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
   （dev6/7 被非本项目容器负载持续占用 ~52GB；对等 pid 保护未触碰）。待执行命令与续接方式见
   /tmp/r218_wave6_state.md round L（lp_probe=2e watcher 触发 /tmp/lp_probe.sh；ranchor=/tmp/ranchor_leg.sh，
   ID 门 9eb603e3；可判分最小集=/tmp/gradeable/，6 题严格判分）。**"已准备"不等于"已验证"。**
-  #19767@bfad514b0 cpu-ut(v0.31.0 腿)=自建 runner 容器实现失败（注记仅含基础设施错误、零测试失败注记、
-  日志不可取；作者侧重跑 403=admin 权限）＝与 #19728 同类基建失败，单列外部等待，不归为代码失败。
+  #19767@bfad514b0 cpu-ut(v0.31.0 腿)＝**失败原因待确认**：可证证据＝注记仅含自建 runner 容器启动
+  失败信息（作者侧重跑请求 403=admin）；该 run 的运行/任务日志不可取得——**日志不可取得本身不能证明
+  零测试失败**。与 #19728 同列基建类待确认、单列外部等待；不影响如实报告 PR 已提交。
 
 ### 11.4 吞吐/内存/瓶颈与未解项（全部引自冻结组合，不改数）
-- 吞吐/内存：§3/§4（同 GMU 容量 8.00×、decode 2.2-2.7× slow、e2e 2.4-3.7×）；图与 CSV=r6 包 figs/（§5）。
-- 瓶颈证据：middle kernel 209ms/步地板＋host gap 构成（§6/ADDENDUM §10.5）；未解项=host gap 构成、12.7× 成因、16K 未采样、INT2 首 token 分岔边际（新增）。
-- OPEN 清单：跨代状态残留（NS=1 长 ctx）、INT2 批量分组内核地板、集成 tip 电池双锚注记待 ranchor 后由 PR 侧发布。
+- **摘要优先＝同 GMU 实测吞吐**：2K/C32 **INT2 41.5 vs BF16 196.6 tok/s**；16K/C8 **INT2 4.51
+  vs BF16 26.4 tok/s**（§3/§4）。其他 TPOT（如 2.6×/3.6×）与 e2e（2.4-3.7×）比值**各标其测量
+  协议**，不与 tok/s 同列混引；图与 CSV=r6 包 figs/（§5）。
+- **容量分列（不作收益解释）**：同 GMU 池容量 **8.00×**；相近总 HBM（对齐配置）池容量
+  **4.27×**——均为 KV 池容量比，**不是实测吞吐、也不是最大并发收益**。
+- 瓶颈证据：**profiler ON 条件下，中段 kernel 观测耗时约 209ms/步**（§6/ADDENDUM §10.5）；
+  **host gap 内部构成保持未定位**（跨 ON/OFF 条件相减的耗时分解已撤回，不在此恢复）。
+- OPEN 清单：host gap 构成、12.7× 成因、16K 未采样、跨代状态残留（NS=1 长 ctx）、INT2 批量分组
+  内核地板、INT2 首 token 分岔边际（lp_probe 在跑）。
 
 ### 11.5 证据包
 - 冻结组合包：/tmp/r218_pack/r218_evidence_20261022_0649.tar.gz 与 evidence_pack/r218_evidence_20261022_1024（终版；SHA256 于包内 MANIFEST）
 - wave-7 归档：/home/n00928095/R218_UPSTREAM_WORK/delivery/r218_wave7_final/（22+2 文件：电池原始输出、身份、PAIRED/ANSWER_CHECK 分析、全树 diff 映射）
+- **wave-7 服务证据可下载包**：`r218-evidence/20261026` 分支内
+  `r218_wave7_service_evidence_20261026.tar.gz`（raw URL 可下载；42,039 字节；
+  **SHA256＝21b015b6fef7addd14d95110f126f58ad90cc5c68598de98ca4703bc18c864f2**）；
+  内容=w7wA/B/C＋fin_tree 双模式电池原始输出、身份横幅、PAIRED/ANSWER_CHECK 分析、
+  tree_overlay_map 全树对账、HANDOFF、serve 日志（ranchor/六题判分结果为后续增量包）。
 - 证据分支：github.com/nqz1997/vllm-ascend tree `r218-evidence/20261026`（ARTICLE+ADDENDUM+PR_ADVANCE；本节发布后以读回 SHA 为准）
