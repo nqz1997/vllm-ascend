@@ -254,8 +254,8 @@ Base：`https://raw.githubusercontent.com/nqz1997/vllm-ascend/r218-evidence/2026
 ## 11. main 线增量（2026-10-26 第 7 波——单元 19-22 提交＋最终树小规模功能回归；只作增量行）
 
 - **细拆链 22/22 齐全**：#19764(19 装配)/#19765(20 派发)/#19766(21 注册)/#19767(22 worker)
-  已投 Draft（**终版 head：m-pr-19=eeb34c4a5 / m-pr-20=49524a610 / m-pr-21=e26e9e5ec /
-  m-pr-22=a7da582bd**（wave-7b 全树修复＋两轮测试文件级修正后 head——test_kv_int2.py
+  已全部转 **ready for review**（终版 head：m-pr-19=eeb34c4a5 / m-pr-20=49524a610 / m-pr-21=18a832f33 /
+  m-pr-22=868586798（21/22 末次仅 kv_int2 UT import 序收敛，无行为变化；e26e9e5ec/a7da582bd 为其直接前驱）**（wave-7b 全树修复＋两轮测试文件级修正后 head——test_kv_int2.py
   I001 导入排序＋该文件自 19/20 树移除（其树无 kv_int2.py，mypy/cpu-ut 会假败；21/22
   保留 blob c503b4238）——运行时文件零变化，下述 blob 闭环 9/9 已在该终版 head 复验
   仍全等；此前六个分支一度被截断树头覆盖，已全部以完整树快进复原并逐树校验；
