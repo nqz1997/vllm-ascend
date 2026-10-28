@@ -20,10 +20,12 @@
 import copy
 import gc
 import logging
+import os
 from contextlib import AbstractContextManager, nullcontext
 from fnmatch import filter as fnmatch_filter
 from types import NoneType
 from typing import Any
+from unittest.mock import patch
 
 import torch
 import torch.nn as nn
@@ -55,7 +57,6 @@ from vllm.tasks import SupportedTask
 from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.mem_utils import MemorySnapshot, format_gib, memory_profiling
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
-from vllm.v1.core.kv_cache_utils import get_kv_cache_groups, unify_hybrid_kv_cache_specs
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
@@ -101,6 +102,7 @@ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.layerwise_cache_la
 from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_manager import (
     plan_sparse_kv_offload_memory,
 )
+from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
 from vllm_ascend.distributed.parallel_state import init_ascend_model_parallel
 from vllm_ascend.observability.runtime_guard.hooks import runtime_guard_idle_step
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
@@ -113,7 +115,22 @@ from vllm_ascend.utils import (
     register_ascend_fla_customop,
     register_device_print,
     setup_ascend_local_comm_res,
+    vllm_version_is,
 )
+
+# vLLM #61183 moved the planning helpers on main; v0.32.0 keeps them
+# in kv_cache_utils, so importing the main-only module breaks worker startup.
+if vllm_version_is("0.32.0"):
+    from vllm.v1.core.kv_cache_utils import (
+        get_kv_cache_groups,
+        unify_hybrid_kv_cache_specs,
+    )
+else:
+    from vllm.v1.core.kv_cache_planning import (
+        get_kv_cache_groups,
+        unify_hybrid_kv_cache_specs,
+    )
+
 
 torch._dynamo.trace_rules.clear_lru_cache()  # noqa: E402
 from torch._dynamo.variables import TorchInGraphFunctionVariable  # noqa: E402
@@ -196,6 +213,10 @@ class NPUWorker(WorkerBase):
 
         if self.cache_config.cache_dtype == "auto":
             self.cache_dtype = self.model_config.dtype
+        elif self.cache_config.cache_dtype == "int2_per_token_head":
+            # OSCAR True-INT2: packed 4xINT2 per byte. vLLM's dtype map only
+            # covers stock dtypes, so resolve the packed storage dtype here.
+            self.cache_dtype = torch.uint8
         else:
             self.cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[self.cache_config.cache_dtype]
 
@@ -318,6 +339,7 @@ class NPUWorker(WorkerBase):
         self.synchronize_device()
 
         allocator = CaMemAllocator.get_instance()
+        global_te.unregister_buffer()
         allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
         free_bytes_after_sleep, total = torch.npu.mem_get_info()
         freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
@@ -331,6 +353,9 @@ class NPUWorker(WorkerBase):
             used_bytes / GiB_bytes,
         )
 
+    def disconnect_kv_transfer_peers(self) -> None:
+        global_te.disconnect_all_peers()
+
     def wake_up(self, tags: list[str] | None = None) -> None:
         nz_mode = get_ascend_config().weight_nz_mode
         if nz_mode:
@@ -342,6 +367,8 @@ class NPUWorker(WorkerBase):
             )
         allocator = CaMemAllocator.get_instance()
         allocator.wake_up(tags=tags)
+        if tags is None or "kv_cache" in tags:
+            global_te.reregister_buffer()
 
         # Do not access or consume saved weights when only the KV pool wakes.
         wake_weights = tags is None or "weights" in tags
@@ -712,6 +739,12 @@ class NPUWorker(WorkerBase):
         self.available_kv_cache_memory_bytes = self._scale_kv_cache_memory_for_multi_group(
             self.available_kv_cache_memory_bytes,
         )
+        # R150 P3: optional KV-pool BYTES cap (default OFF). INT2 pools reserve
+        # 4x tokens per byte vs BF16; vLLM fills all available HBM with blocks
+        # the tested (B, MML) can never use, squeezing prefill workspace.
+        _r150_mcap = float(os.environ.get("R150_MAX_KV_GB", "0"))
+        if _r150_mcap > 0 and self.available_kv_cache_memory_bytes > _r150_mcap * (1 << 30):
+            self.available_kv_cache_memory_bytes = int(_r150_mcap * (1 << 30))
 
         extra_config = get_layerwise_reuse_config(self.vllm_config.kv_transfer_config)
         if extra_config is not None:
@@ -935,11 +968,20 @@ class NPUWorker(WorkerBase):
             assert allocator.get_current_usage() == 0, "Sleep mode can only be used for one instance per process."
             context = allocator.use_memory_pool(tag="weights")
         else:
-            from contextlib import nullcontext
-
             context = nullcontext()  # type: ignore
 
-        with context, set_current_vllm_config(self.vllm_config):
+        # vLLM #57516 reclaims cached memory inside `load_model` via
+        # `torch.accelerator.empty_cache()`. Inside the sleep-mode pluggable
+        # memory pool `torch.npu.empty_cache()` trips "captures_underway.empty()",
+        # so neutralize it while weights load on both supported lanes; the pool
+        # is reclaimed by sleep()/wake_up().
+        empty_cache_context: AbstractContextManager[Any]
+        if self.vllm_config.model_config.enable_sleep_mode:
+            empty_cache_context = patch("torch.npu.empty_cache", lambda: None)
+        else:
+            empty_cache_context = nullcontext()
+
+        with context, empty_cache_context, set_current_vllm_config(self.vllm_config):
             self.model_runner.load_model()
 
         if getattr(self, "use_v2_model_runner", False) and has_ec_transfer():
@@ -1156,6 +1198,24 @@ class NPUWorker(WorkerBase):
             pcp_rank = get_pcp_group().rank_in_group
             return {(pp_rank, pcp_rank, tp_rank): metadata}
         return {(pp_rank, tp_rank): metadata}
+
+    def get_simple_cpu_offload_num_cpu_blocks(self) -> int | None:
+        if vllm_version_is("0.32.0"):
+            # v0.32.0's engine core never issues this RPC, and the upstream
+            # `._find_simple_cpu_offload_connector` / `get_aligned_num_cpu_blocks`
+            # helpers do not exist on that lane.
+            return None
+        else:
+            from vllm.distributed.kv_transfer.kv_connector.v1.simple_cpu_offload_connector import (  # noqa: E501
+                _find_simple_cpu_offload_connector,
+            )
+
+            if not has_kv_transfer_group():
+                return None
+            connector = _find_simple_cpu_offload_connector(get_kv_transfer_group())
+            if connector is None:
+                return None
+            return connector.get_aligned_num_cpu_blocks()
 
     def _get_layerwise_kv_cache_memory_info(
         self,
